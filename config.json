@@ -1,0 +1,38 @@
+{
+  "camera": {
+    "index": 0,
+    "width": 640,
+    "height": 480,
+    "active_fps": 30,
+    "idle_fps": 6,
+    "idle_timeout_sec": 2.5
+  },
+  "tracking": {
+    "max_num_hands": 2,
+    "model_complexity": 0,
+    "min_detection_confidence": 0.65,
+    "min_tracking_confidence": 0.65
+  },
+  "kinematics": {
+    "filter_min_cutoff": 1.15,
+    "filter_beta": 0.007,
+    "filter_d_cutoff": 1.0,
+    "roi_margin_x": 0.16,
+    "roi_margin_y": 0.16,
+    "accel_gamma": 1.25,
+    "deadzone_px": 1.2
+  },
+  "gestures": {
+    "pinch_enter_ratio": 0.30,
+    "pinch_exit_ratio": 0.42,
+    "drag_hold_sec": 0.24,
+    "click_cooldown_sec": 0.16,
+    "scroll_sensitivity": 1200,
+    "scroll_deadzone": 0.008
+  },
+  "ui": {
+    "overlay_enabled": true,
+    "show_cursor_ring": true,
+    "show_status_pill": true
+  }
+}

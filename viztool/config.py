@@ -1,0 +1,89 @@
+"""Configuration loader and typed defaults for VizTool."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+@dataclass
+class CameraConfig:
+    index: int = 0
+    width: int = 640
+    height: int = 480
+    active_fps: int = 30
+    idle_fps: int = 6
+    idle_timeout_sec: float = 2.5
+
+
+@dataclass
+class TrackingConfig:
+    max_num_hands: int = 2
+    model_complexity: int = 0
+    min_detection_confidence: float = 0.65
+    min_tracking_confidence: float = 0.65
+
+
+@dataclass
+class KinematicsConfig:
+    filter_min_cutoff: float = 1.15
+    filter_beta: float = 0.007
+    filter_d_cutoff: float = 1.0
+    roi_margin_x: float = 0.16
+    roi_margin_y: float = 0.16
+    accel_gamma: float = 1.25
+    deadzone_px: float = 1.2
+
+
+@dataclass
+class GestureConfig:
+    pinch_enter_ratio: float = 0.30
+    pinch_exit_ratio: float = 0.42
+    drag_hold_sec: float = 0.24
+    click_cooldown_sec: float = 0.16
+    scroll_sensitivity: int = 1200
+    scroll_deadzone: float = 0.008
+
+
+@dataclass
+class UIConfig:
+    overlay_enabled: bool = True
+    show_cursor_ring: bool = True
+    show_status_pill: bool = True
+
+
+@dataclass
+class VizConfig:
+    camera: CameraConfig = field(default_factory=CameraConfig)
+    tracking: TrackingConfig = field(default_factory=TrackingConfig)
+    kinematics: KinematicsConfig = field(default_factory=KinematicsConfig)
+    gestures: GestureConfig = field(default_factory=GestureConfig)
+    ui: UIConfig = field(default_factory=UIConfig)
+
+
+def _merge_dataclass(cls: type, data: dict[str, Any] | None) -> Any:
+    if not data:
+        return cls()
+    valid_keys = {f for f in cls.__dataclass_fields__}
+    filtered = {k: v for k, v in data.items() if k in valid_keys}
+    return cls(**filtered)
+
+
+def load_config(path: str | Path = "config.json") -> VizConfig:
+    """Load configuration from JSON file, falling back to safe defaults."""
+    cfg_path = Path(path)
+    if not cfg_path.exists():
+        return VizConfig()
+
+    with cfg_path.open("r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    return VizConfig(
+        camera=_merge_dataclass(CameraConfig, raw.get("camera")),
+        tracking=_merge_dataclass(TrackingConfig, raw.get("tracking")),
+        kinematics=_merge_dataclass(KinematicsConfig, raw.get("kinematics")),
+        gestures=_merge_dataclass(GestureConfig, raw.get("gestures")),
+        ui=_merge_dataclass(UIConfig, raw.get("ui")),
+    )
