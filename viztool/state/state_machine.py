@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Deque, Optional
 
 from viztool.backends.win32_input import MouseButton, Win32InputBackend
 from viztool.config import GestureConfig
@@ -45,6 +46,7 @@ class InteractionStateMachine:
 
         self.state = InteractionState.SLEEP_IDLE
         self._cursor_px: tuple[int, int] = (0, 0)
+        self._hover_history: Deque[tuple[int, int]] = deque(maxlen=4)
         self._pinch_start_t: float = 0.0
         self._anchor_px: tuple[int, int] = (0, 0)
         self._last_click_t: float = 0.0
@@ -68,6 +70,7 @@ class InteractionStateMachine:
             if self.state == InteractionState.DRAGGING:
                 self._backend.mouse_up(MouseButton.LEFT)
             self.state = InteractionState.SLEEP_IDLE
+            self._hover_history.clear()
             self._prev_secondary = False
             self._prev_middle = False
             self._prev_scroll_y = None
@@ -106,8 +109,11 @@ class InteractionStateMachine:
         if intent == IntentType.PRIMARY_HOLD:
             self._prev_scroll_y = None
             if self.state in (InteractionState.HOVER, InteractionState.SCROLLING):
-                # Freeze cursor at exact onset pixel to eliminate click-drift
-                self._anchor_px = self._cursor_px if self._cursor_px != (0, 0) else mapped_px
+                # Anchor to pre-pinch lookback position (2-3 frames before contact)
+                if self._hover_history:
+                    self._anchor_px = self._hover_history[0]
+                else:
+                    self._anchor_px = self._cursor_px if self._cursor_px != (0, 0) else mapped_px
                 self._pinch_start_t = now
                 self.state = InteractionState.PINCH_LOCK
             elif self.state == InteractionState.PINCH_LOCK:
@@ -162,6 +168,7 @@ class InteractionStateMachine:
         self._prev_scroll_y = None
         self.state = InteractionState.HOVER
         self._cursor_px = mapped_px
+        self._hover_history.append(self._cursor_px)
         if not (is_sec or is_mid):
             self._backend.move_cursor_abs(*self._cursor_px)
 
