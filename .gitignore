@@ -1,0 +1,27 @@
+# Python / Virtual Environments
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Logs & Test Artifacts
+*.log
+*.png
+*.jpg
+screenshot_*.png
+my_screenshot_*.png
+drawing_*.png
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local Config Overrides
+config.local.json
