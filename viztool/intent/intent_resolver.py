@@ -17,6 +17,7 @@ class IntentType(str, Enum):
     PRIMARY_HOLD = "PRIMARY_HOLD"
     SECONDARY_TRIGGER = "SECONDARY_TRIGGER"
     MIDDLE_TRIGGER = "MIDDLE_TRIGGER"
+    RADIAL_HOLD = "RADIAL_HOLD"
     SCROLL_PAN = "SCROLL_PAN"
     PALM_READY = "PALM_READY"
     FIST_ACTIVATE = "FIST_ACTIVATE"
@@ -74,6 +75,8 @@ def resolve_intent(
         intent = IntentType.SECONDARY_TRIGGER
     elif g == GestureType.RING_PINCH:
         intent = IntentType.MIDDLE_TRIGGER
+    elif g == GestureType.PINKY_PINCH:
+        intent = IntentType.RADIAL_HOLD
     elif g == GestureType.TWO_FINGER_SCROLL:
         intent = IntentType.SCROLL_PAN
     elif g == GestureType.OPEN_PALM:

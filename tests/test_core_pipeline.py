@@ -11,6 +11,7 @@ from viztool.intent.intent_resolver import IntentType, resolve_intent
 from viztool.kinematics.coordinate_mapper import CoordinateMapper
 from viztool.kinematics.hand_kinematics import extract_hand_features
 from viztool.kinematics.one_euro_filter import OneEuroFilter
+from viztool.modes.mode_types import AppMode
 from viztool.state.state_machine import InteractionState, InteractionStateMachine
 from viztool.tracking.hand_tracker import HandTracker, TrackedHand
 
@@ -173,6 +174,43 @@ class TestVizToolCore(unittest.TestCase):
         tracker = HandTracker(TrackingConfig(model_path="models/hand_landmarker.task"))
         self.assertTrue(tracker._use_tasks)
         tracker.close()
+
+    def test_radial_menu_switches_mode_to_keyboard(self) -> None:
+        cfg = GestureConfig()
+        mapper = CoordinateMapper(
+            KinematicsConfig(tracking_mode="relative", deadzone_px=0.0),
+            (0, 0, 1920, 1080),
+        )
+        backend = MagicMock()
+        backend.get_cursor_pos.return_value = (960, 540)
+        sm = InteractionStateMachine(cfg, mapper, backend)
+
+        pinky_start = MagicMock(
+            primary_gesture=GestureType.PINKY_PINCH,
+            index_pinch=False,
+            pointer_xy=(0.5, 0.5),
+            palm_center_xy=(0.5, 0.5),
+        )
+        pinky_down = MagicMock(
+            primary_gesture=GestureType.PINKY_PINCH,
+            index_pinch=False,
+            pointer_xy=(0.5, 0.58),  # Move downward -> KEYBOARD slice
+            palm_center_xy=(0.5, 0.58),
+        )
+        hover = MagicMock(
+            primary_gesture=GestureType.HOVER,
+            index_pinch=False,
+            pointer_xy=(0.5, 0.58),
+            palm_center_xy=(0.5, 0.58),
+        )
+
+        sm.step(1.0, resolve_intent(pinky_start))
+        fb_menu = sm.step(1.05, resolve_intent(pinky_down))
+        self.assertEqual(fb_menu.state, InteractionState.RADIAL_MENU)
+        self.assertEqual(fb_menu.radial_selection, AppMode.KEYBOARD)
+
+        fb_done = sm.step(1.10, resolve_intent(hover))
+        self.assertEqual(fb_done.mode, AppMode.KEYBOARD)
 
 
 if __name__ == "__main__":

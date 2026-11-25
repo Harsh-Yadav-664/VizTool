@@ -1,4 +1,4 @@
-"""Main VizTool pipeline orchestrator with Adaptive Power Governor & System Tray."""
+"""Main VizTool pipeline orchestrator with Adaptive Power Governor, Tray, MiniWidget & Keyboard."""
 
 from __future__ import annotations
 
@@ -11,14 +11,17 @@ from viztool.gestures.gesture_detector import GestureDetector
 from viztool.intent.intent_resolver import resolve_intent
 from viztool.kinematics.coordinate_mapper import CoordinateMapper
 from viztool.kinematics.hand_kinematics import extract_hand_features
+from viztool.modes.mode_types import AppMode, RADIAL_SLICES
 from viztool.state.state_machine import InteractionState, InteractionStateMachine, StateFeedback
 from viztool.tracking.hand_tracker import HandTracker
+from viztool.ui.keyboard_overlay import VirtualKeyboardOverlay
+from viztool.ui.mini_widget import CornerMiniWidget
 from viztool.ui.overlay import TranslucentOverlay
 from viztool.ui.tray import VizTray
 
 
 class VizToolEngine:
-    """Connects all 9 pipeline layers with zero-camera-window execution."""
+    """Connects all pipeline layers with zero-camera-window execution."""
 
     def __init__(self, cfg: VizConfig) -> None:
         self._cfg = cfg
@@ -29,10 +32,17 @@ class VizToolEngine:
             cfg.kinematics, self._backend.get_virtual_screen_bounds()
         )
         self._detector = GestureDetector(cfg.gestures)
+        self._keyboard = VirtualKeyboardOverlay(
+            self._backend, on_hide=self._on_keyboard_hide
+        )
         self._state_machine = InteractionStateMachine(
-            cfg.gestures, self._mapper, self._backend
+            cfg.gestures,
+            self._mapper,
+            self._backend,
+            on_mode_changed=self._on_mode_changed,
         )
         self._overlay = TranslucentOverlay(cfg.ui)
+        self._mini_widget = CornerMiniWidget(on_cycle_mode=self.cycle_mode) if cfg.ui.show_status_pill else None
         self._tray = (
             VizTray(
                 on_toggle_pause=self.toggle_pause,
@@ -45,17 +55,30 @@ class VizToolEngine:
         self._running = False
         self._paused = False
 
+    def _on_mode_changed(self, mode: AppMode) -> None:
+        self._keyboard.set_visible(mode == AppMode.KEYBOARD)
+
+    def _on_keyboard_hide(self) -> None:
+        self._state_machine.set_mode(AppMode.MOUSE)
+
+    def cycle_mode(self) -> None:
+        cur = self._state_machine.mode
+        idx = (RADIAL_SLICES.index(cur) + 1) % len(RADIAL_SLICES) if cur in RADIAL_SLICES else 0
+        self._state_machine.set_mode(RADIAL_SLICES[idx])
+
     def toggle_pause(self) -> bool:
         self._paused = not self._paused
         self._camera.set_idle_mode(self._paused)
         if self._paused:
-            self._overlay.update(
-                StateFeedback(
-                    state=InteractionState.SLEEP_IDLE,
-                    cursor_px=(0, 0),
-                    gesture_label="PAUSED",
-                )
+            fb = StateFeedback(
+                state=InteractionState.SLEEP_IDLE,
+                mode=self._state_machine.mode,
+                cursor_px=(0, 0),
+                gesture_label="PAUSED",
             )
+            self._overlay.update(fb)
+            if self._mini_widget is not None:
+                self._mini_widget.update(fb)
         return self._paused
 
     def toggle_tracking_mode(self) -> str:
@@ -69,9 +92,12 @@ class VizToolEngine:
         self._running = False
 
     def run(self) -> None:
-        """Start camera, overlay, tray, and main processing loop until interrupted."""
+        """Start camera, overlays, mini-widget, tray, and processing loop."""
         self._camera.start()
         self._overlay.start()
+        self._keyboard.start()
+        if self._mini_widget is not None:
+            self._mini_widget.start()
         if self._tray is not None:
             self._tray.start()
         self._running = True
@@ -80,7 +106,7 @@ class VizToolEngine:
         is_idle = False
 
         print(f"VizTool active ({self._cfg.kinematics.tracking_mode} mode, headless).")
-        print("Use the System Tray icon or press Ctrl+C in this terminal to stop.")
+        print("Pinky+Thumb Pinch = Iron-Man Radial Menu | System Tray / Ctrl+C to stop.")
 
         try:
             while self._running:
@@ -117,6 +143,13 @@ class VizToolEngine:
 
                 feedback = self._state_machine.step(now, intent)
                 self._overlay.update(feedback)
+                if self._mini_widget is not None:
+                    self._mini_widget.update(feedback)
+                if feedback.mode == AppMode.KEYBOARD:
+                    self._keyboard.update_cursor(
+                        feedback.cursor_px,
+                        pinched_click=(feedback.clicked_event == "KEY_PINCH"),
+                    )
         except KeyboardInterrupt:
             pass
         finally:
@@ -126,6 +159,9 @@ class VizToolEngine:
         self._running = False
         if self._tray is not None:
             self._tray.stop()
+        if self._mini_widget is not None:
+            self._mini_widget.stop()
+        self._keyboard.stop()
         self._overlay.stop()
         self._camera.stop()
         self._tracker.close()

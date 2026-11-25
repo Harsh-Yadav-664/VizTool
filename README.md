@@ -16,7 +16,7 @@ VizTool turns a standard webcam into a zero-jitter, zero-lag mouse, virtual keyb
 ## Status
 - [x] Architecture & Technical Specification ([PRD.md](./PRD.md))
 - [x] Legacy prototypes archived in `legacy/`
-- [ ] Phase 1: Ultra-Light Core & Zero-Jitter Mouse
-- [ ] Phase 2: Translucent Overlay & Movable Corner Widget
-- [ ] Phase 3: Any-Angle 3D Gestures, Scroll & Window Control
-- [ ] Phase 4: Radial Menu, Media Mode & Floating Virtual Keyboard
+- [x] Phase 1: Ultra-Light Core & Zero-Jitter Mouse
+- [x] Phase 2: Translucent Overlay, Movable Corner Mini-Widget & System Tray
+- [x] Phase 3: Any-Angle 3D Gestures, Scroll & Bimanual Window Control
+- [x] Phase 4: Radial Menu, Media Mode, Laser Pointer & Floating Virtual Keyboard

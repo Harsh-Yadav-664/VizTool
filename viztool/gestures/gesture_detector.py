@@ -15,6 +15,7 @@ class GestureType(str, Enum):
     INDEX_PINCH = "INDEX_PINCH"
     MIDDLE_PINCH = "MIDDLE_PINCH"
     RING_PINCH = "RING_PINCH"
+    PINKY_PINCH = "PINKY_PINCH"
     TWO_FINGER_SCROLL = "TWO_FINGER_SCROLL"
     OPEN_PALM = "OPEN_PALM"
     FIST = "FIST"
@@ -45,6 +46,7 @@ class GestureFrame:
     index_pinch: bool
     middle_pinch: bool
     ring_pinch: bool
+    pinky_pinch: bool
     pointer_xy: tuple[float, float]
     palm_center_xy: tuple[float, float]
 
@@ -56,16 +58,19 @@ class GestureDetector:
         self._index_gate = SchmittTrigger(cfg.pinch_enter_ratio, cfg.pinch_exit_ratio)
         self._middle_gate = SchmittTrigger(cfg.pinch_enter_ratio, cfg.pinch_exit_ratio)
         self._ring_gate = SchmittTrigger(cfg.pinch_enter_ratio, cfg.pinch_exit_ratio)
+        self._pinky_gate = SchmittTrigger(cfg.pinch_enter_ratio, cfg.pinch_exit_ratio)
 
     def reset(self) -> None:
         self._index_gate.reset()
         self._middle_gate.reset()
         self._ring_gate.reset()
+        self._pinky_gate.reset()
 
     def detect(self, feat: HandFeatures) -> GestureFrame:
         idx_pinch = self._index_gate.update(feat.thumb_index_ratio)
         mid_pinch = self._middle_gate.update(feat.thumb_middle_ratio)
         ring_pinch = self._ring_gate.update(feat.thumb_ring_ratio)
+        pinky_pinch = self._pinky_gate.update(feat.thumb_pinky_ratio)
 
         # Priority order prevents overlapping triggers
         if idx_pinch:
@@ -74,6 +79,8 @@ class GestureDetector:
             gesture = GestureType.MIDDLE_PINCH
         elif ring_pinch:
             gesture = GestureType.RING_PINCH
+        elif pinky_pinch:
+            gesture = GestureType.PINKY_PINCH
         elif (
             feat.index_straight
             and feat.middle_straight
@@ -104,6 +111,7 @@ class GestureDetector:
             index_pinch=idx_pinch,
             middle_pinch=mid_pinch,
             ring_pinch=ring_pinch,
+            pinky_pinch=pinky_pinch,
             pointer_xy=feat.pointer_xy,
             palm_center_xy=feat.palm_center_xy,
         )

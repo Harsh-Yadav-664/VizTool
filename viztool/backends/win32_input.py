@@ -37,6 +37,18 @@ MOUSEEVENTF_VIRTUALDESK = 0x4000
 MOUSEEVENTF_ABSOLUTE = 0x8000
 
 KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_UNICODE = 0x0004
+
+VK_BACK = 0x08
+VK_RETURN = 0x0D
+VK_LEFT = 0x25
+VK_RIGHT = 0x27
+VK_VOLUME_MUTE = 0xAD
+VK_VOLUME_DOWN = 0xAE
+VK_VOLUME_UP = 0xAF
+VK_MEDIA_NEXT_TRACK = 0xB0
+VK_MEDIA_PREV_TRACK = 0xB1
+VK_MEDIA_PLAY_PAUSE = 0xB3
 
 SM_XVIRTUALSCREEN = 76
 SM_YVIRTUALSCREEN = 77
@@ -243,3 +255,26 @@ class Win32InputBackend:
             ),
         )
         user32.SendInput(3, inputs, ctypes.sizeof(_Input))
+
+    def send_key(self, vk_code: int) -> None:
+        """Tap a single virtual-key code."""
+        self.send_hotkey(vk_code)
+
+    def send_unicode_char(self, ch: str) -> None:
+        """Inject a Unicode character without stealing focus or relying on layout."""
+        if not ch:
+            return
+        code = ord(ch)
+        inputs = (_Input * 2)(
+            _Input(
+                type=INPUT_KEYBOARD,
+                ii=_InputUnion(ki=_KeybdInput(0, code, KEYEVENTF_UNICODE, 0, self._extra_ptr)),
+            ),
+            _Input(
+                type=INPUT_KEYBOARD,
+                ii=_InputUnion(
+                    ki=_KeybdInput(0, code, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, self._extra_ptr)
+                ),
+            ),
+        )
+        user32.SendInput(2, inputs, ctypes.sizeof(_Input))
