@@ -47,6 +47,7 @@ class GestureFrame:
     middle_pinch: bool
     ring_pinch: bool
     pinky_pinch: bool
+    air_poke: bool
     pointer_xy: tuple[float, float]
     palm_center_xy: tuple[float, float]
 
@@ -59,18 +60,28 @@ class GestureDetector:
         self._middle_gate = SchmittTrigger(cfg.pinch_enter_ratio, cfg.pinch_exit_ratio)
         self._ring_gate = SchmittTrigger(cfg.pinch_enter_ratio, cfg.pinch_exit_ratio)
         self._pinky_gate = SchmittTrigger(cfg.pinch_enter_ratio, cfg.pinch_exit_ratio)
+        self._prev_z: float | None = None
 
     def reset(self) -> None:
         self._index_gate.reset()
         self._middle_gate.reset()
         self._ring_gate.reset()
         self._pinky_gate.reset()
+        self._prev_z = None
 
     def detect(self, feat: HandFeatures) -> GestureFrame:
         idx_pinch = self._index_gate.update(feat.thumb_index_ratio)
         mid_pinch = self._middle_gate.update(feat.thumb_middle_ratio)
         ring_pinch = self._ring_gate.update(feat.thumb_ring_ratio)
         pinky_pinch = self._pinky_gate.update(feat.thumb_pinky_ratio)
+
+        # Air-Poke: rapid forward Z-impulse of index tip while index is straight
+        air_poke = False
+        if self._prev_z is not None and feat.index_straight and not idx_pinch:
+            dz = feat.pointer_z - self._prev_z
+            if dz < -0.018:
+                air_poke = True
+        self._prev_z = feat.pointer_z
 
         # Priority order prevents overlapping triggers
         if idx_pinch:
@@ -112,6 +123,7 @@ class GestureDetector:
             middle_pinch=mid_pinch,
             ring_pinch=ring_pinch,
             pinky_pinch=pinky_pinch,
+            air_poke=air_poke,
             pointer_xy=feat.pointer_xy,
             palm_center_xy=feat.palm_center_xy,
         )

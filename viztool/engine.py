@@ -17,6 +17,7 @@ from viztool.tracking.hand_tracker import HandTracker
 from viztool.ui.keyboard_overlay import VirtualKeyboardOverlay
 from viztool.ui.mini_widget import CornerMiniWidget
 from viztool.ui.overlay import TranslucentOverlay
+from viztool.ui.settings_window import open_settings_window
 from viztool.ui.tray import VizTray
 
 
@@ -42,11 +43,19 @@ class VizToolEngine:
             on_mode_changed=self._on_mode_changed,
         )
         self._overlay = TranslucentOverlay(cfg.ui)
-        self._mini_widget = CornerMiniWidget(on_cycle_mode=self.cycle_mode) if cfg.ui.show_status_pill else None
+        self._mini_widget = (
+            CornerMiniWidget(
+                on_cycle_mode=self.cycle_mode,
+                on_open_settings=self.open_settings,
+            )
+            if cfg.ui.show_status_pill
+            else None
+        )
         self._tray = (
             VizTray(
                 on_toggle_pause=self.toggle_pause,
                 on_toggle_mode=self.toggle_tracking_mode,
+                on_open_settings=self.open_settings,
                 on_exit=self.request_stop,
             )
             if cfg.ui.tray_enabled
@@ -90,6 +99,17 @@ class VizToolEngine:
 
     def request_stop(self) -> None:
         self._running = False
+
+    def open_settings(self) -> None:
+        open_settings_window(self._cfg, on_applied=self._apply_live_settings)
+
+    def _apply_live_settings(self) -> None:
+        self._mapper = CoordinateMapper(
+            self._cfg.kinematics, self._backend.get_virtual_screen_bounds()
+        )
+        self._detector = GestureDetector(self._cfg.gestures)
+        self._state_machine._mapper = self._mapper
+        self._state_machine._cfg = self._cfg.gestures
 
     def run(self) -> None:
         """Start camera, overlays, mini-widget, tray, and processing loop."""

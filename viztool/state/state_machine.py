@@ -357,6 +357,10 @@ class InteractionStateMachine:
         if not (is_sec or is_mid):
             self._backend.move_cursor_abs(*self._cursor_px)
 
+        if self.mode == AppMode.KEYBOARD and intent_frame.air_poke and self._can_click(now):
+            self._last_click_t = now
+            clicked_event = "KEY_PINCH"
+
         return StateFeedback(
             state=self.state,
             mode=self.mode,

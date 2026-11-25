@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, List
 
@@ -103,3 +103,9 @@ def load_config(path: str | Path = "config.json") -> VizConfig:
         gestures=_merge_dataclass(GestureConfig, raw.get("gestures")),
         ui=_merge_dataclass(UIConfig, raw.get("ui")),
     )
+
+
+def save_config(cfg: VizConfig, path: str | Path = "config.json") -> None:
+    """Persist configuration to JSON."""
+    with Path(path).open("w", encoding="utf-8") as f:
+        json.dump(asdict(cfg), f, indent=2)

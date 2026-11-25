@@ -32,6 +32,7 @@ class IntentFrame:
     gesture_label: str
     secondary_open_palm: bool = False
     bimanual_span: float = 0.0
+    air_poke: bool = False
 
 
 def resolve_intent(
@@ -92,4 +93,5 @@ def resolve_intent(
         scroll_anchor_y=primary.palm_center_xy[1],
         gesture_label=g.value,
         secondary_open_palm=sec_open,
+        air_poke=bool(getattr(primary, "air_poke", False)),
     )

@@ -212,6 +212,27 @@ class TestVizToolCore(unittest.TestCase):
         fb_done = sm.step(1.10, resolve_intent(hover))
         self.assertEqual(fb_done.mode, AppMode.KEYBOARD)
 
+    def test_air_poke_triggers_key_in_keyboard_mode(self) -> None:
+        cfg = GestureConfig(click_cooldown_sec=0.1)
+        mapper = CoordinateMapper(
+            KinematicsConfig(tracking_mode="relative", deadzone_px=0.0),
+            (0, 0, 1920, 1080),
+        )
+        backend = MagicMock()
+        backend.get_cursor_pos.return_value = (960, 540)
+        sm = InteractionStateMachine(cfg, mapper, backend)
+        sm.set_mode(AppMode.KEYBOARD)
+
+        poke_g = MagicMock(
+            primary_gesture=GestureType.HOVER,
+            index_pinch=False,
+            air_poke=True,
+            pointer_xy=(0.5, 0.5),
+            palm_center_xy=(0.5, 0.5),
+        )
+        fb = sm.step(2.0, resolve_intent(poke_g))
+        self.assertEqual(fb.clicked_event, "KEY_PINCH")
+
 
 if __name__ == "__main__":
     unittest.main()

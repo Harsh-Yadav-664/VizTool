@@ -16,7 +16,7 @@ class HandFeatures:
     handedness: str
     palm_size_3d: float
     pointer_xy: tuple[float, float]  # Stable knuckle anchor in [0..1] image coords
-    pointer_z: float                 # Relative depth
+    pointer_z: float                 # Relative depth of index fingertip
     palm_center_xy: tuple[float, float]
 
     # Normalized 3D pinch distances (distance / palm_size_3d)
@@ -88,7 +88,7 @@ def extract_hand_features(hand: TrackedHand) -> HandFeatures:
     # Knuckle Anchor (Index MCP 5 + Middle MCP 9): stays rock-solid when curling fingers to pinch!
     px = float(0.60 * img[5, 0] + 0.40 * img[9, 0])
     py = float(0.60 * img[5, 1] + 0.40 * img[9, 1])
-    pz = float(img[9, 2])
+    pz = float(w[8, 2])  # Metric Z of index fingertip for Air-Poke detection
     cx, cy = float(img[9, 0]), float(img[9, 1])
 
     return HandFeatures(

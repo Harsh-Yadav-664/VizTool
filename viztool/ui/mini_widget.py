@@ -25,6 +25,7 @@ LWA_ALPHA = 0x00000002
 WM_PAINT = 0x000F
 WM_DESTROY = 0x0002
 WM_LBUTTONDOWN = 0x0201
+WM_RBUTTONUP = 0x0205
 WM_NCLBUTTONDOWN = 0x00A1
 HTCAPTION = 2
 WM_APP_REDRAW = 0x8004
@@ -81,8 +82,13 @@ class CornerMiniWidget:
     PILL_W = 220
     PILL_H = 36
 
-    def __init__(self, on_cycle_mode: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        on_cycle_mode: Callable[[], None],
+        on_open_settings: Optional[Callable[[], None]] = None,
+    ) -> None:
         self._on_cycle_mode = on_cycle_mode
+        self._on_open_settings = on_open_settings
         self._hwnd: Optional[int] = None
         self._thread: Optional[threading.Thread] = None
         self._ready = threading.Event()
@@ -123,6 +129,9 @@ class CornerMiniWidget:
         bg_brush = gdi32.CreateSolidBrush(_rgb(20, 24, 32))
 
         def wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
+            if msg == WM_RBUTTONUP and self._on_open_settings is not None:
+                self._on_open_settings()
+                return 0
             if msg == WM_LBUTTONDOWN:
                 x_pos = lparam & 0xFFFF
                 if x_pos >= self.PILL_W - 68:

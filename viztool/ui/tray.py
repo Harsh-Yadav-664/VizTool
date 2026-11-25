@@ -60,10 +60,12 @@ class VizTray:
         self,
         on_toggle_pause: Callable[[], bool],
         on_toggle_mode: Callable[[], str],
+        on_open_settings: Callable[[], None],
         on_exit: Callable[[], None],
     ) -> None:
         self._on_toggle_pause = on_toggle_pause
         self._on_toggle_mode = on_toggle_mode
+        self._on_open_settings = on_open_settings
         self._on_exit = on_exit
         self._paused = False
         self._mode_label = "Relative Trackpad"
@@ -87,6 +89,7 @@ class VizTray:
                 self._handle_startup,
                 checked=lambda _: is_startup_enabled(),
             ),
+            pystray.MenuItem("Settings...", self._handle_settings),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Exit VizTool", self._handle_exit),
         )
@@ -112,6 +115,9 @@ class VizTray:
 
     def _handle_startup(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
         set_startup_enabled(not is_startup_enabled())
+
+    def _handle_settings(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
+        self._on_open_settings()
 
     def _handle_exit(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
         self._on_exit()
