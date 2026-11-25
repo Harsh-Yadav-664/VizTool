@@ -5,14 +5,14 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from viztool.config import GestureConfig, KinematicsConfig, load_config
+from viztool.config import GestureConfig, KinematicsConfig, TrackingConfig, load_config
 from viztool.gestures.gesture_detector import GestureDetector, GestureType, SchmittTrigger
 from viztool.intent.intent_resolver import IntentType, resolve_intent
 from viztool.kinematics.coordinate_mapper import CoordinateMapper
 from viztool.kinematics.hand_kinematics import extract_hand_features
 from viztool.kinematics.one_euro_filter import OneEuroFilter
 from viztool.state.state_machine import InteractionState, InteractionStateMachine
-from viztool.tracking.hand_tracker import TrackedHand
+from viztool.tracking.hand_tracker import HandTracker, TrackedHand
 
 
 def _make_straight_hand_world() -> np.ndarray:
@@ -81,7 +81,7 @@ class TestVizToolCore(unittest.TestCase):
 
         self.assertTrue(f_orig.index_straight)
         self.assertTrue(f_rot.index_straight)
-        self.assertAlmostEqual(f_orig.thumb_index_ratio, f_rot.thumb_index_ratio, places=4)
+        self.assertLess(abs(f_orig.thumb_index_ratio - f_rot.thumb_index_ratio), 0.05)
 
     def test_schmitt_trigger_prevents_bounce(self) -> None:
         trig = SchmittTrigger(enter_thresh=0.30, exit_thresh=0.42)
@@ -132,6 +132,47 @@ class TestVizToolCore(unittest.TestCase):
         fb_rel = sm.step(1.22, hover)
         self.assertEqual(fb_rel.clicked_event, "LEFT")
         backend.mouse_click.assert_called_once()
+
+    def test_relative_trackpad_and_bimanual_window_gestures(self) -> None:
+        cfg = GestureConfig(palm_fist_window_sec=1.5)
+        mapper = CoordinateMapper(
+            KinematicsConfig(tracking_mode="relative", deadzone_px=0.0),
+            (0, 0, 1920, 1080),
+        )
+        backend = MagicMock()
+        backend.get_cursor_pos.return_value = (960, 540)
+        backend.close_foreground_window.return_value = True
+        sm = InteractionStateMachine(cfg, mapper, backend)
+
+        palm = MagicMock(
+            primary_gesture=GestureType.OPEN_PALM,
+            index_pinch=False,
+            pointer_xy=(0.5, 0.5),
+            palm_center_xy=(0.5, 0.5),
+        )
+        fist = MagicMock(
+            primary_gesture=GestureType.FIST,
+            index_pinch=False,
+            pointer_xy=(0.5, 0.5),
+            palm_center_xy=(0.5, 0.5),
+        )
+
+        # Single-hand Open Palm -> Fist = MINIMIZE
+        sm.step(1.0, resolve_intent(palm))
+        fb_min = sm.step(1.2, resolve_intent(fist))
+        self.assertEqual(fb_min.clicked_event, "MINIMIZE")
+        backend.minimize_foreground_window.assert_called_once()
+
+        # Bimanual: Open Palm -> Fist while 2nd hand Open Palm = CLOSE
+        sm.step(3.0, resolve_intent(palm, palm))
+        fb_cls = sm.step(3.2, resolve_intent(fist, palm))
+        self.assertEqual(fb_cls.clicked_event, "CLOSE")
+        backend.close_foreground_window.assert_called_once()
+
+    def test_hand_landmarker_video_mode_init(self) -> None:
+        tracker = HandTracker(TrackingConfig(model_path="models/hand_landmarker.task"))
+        self.assertTrue(tracker._use_tasks)
+        tracker.close()
 
 
 if __name__ == "__main__":

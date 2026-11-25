@@ -1,4 +1,4 @@
-"""Edge-triggered state machine with Pinch-Anchor lock & click/drag separation."""
+"""Edge-triggered state machine with Pinch-Anchor, Clutch, and Iron-Man shortcuts."""
 
 from __future__ import annotations
 
@@ -16,9 +16,11 @@ from viztool.kinematics.coordinate_mapper import CoordinateMapper
 class InteractionState(str, Enum):
     SLEEP_IDLE = "SLEEP_IDLE"
     HOVER = "HOVER"
+    CLUTCH = "CLUTCH"
     PINCH_LOCK = "PINCH_LOCK"
     DRAGGING = "DRAGGING"
     SCROLLING = "SCROLLING"
+    ZOOMING = "ZOOMING"
 
 
 @dataclass(frozen=True)
@@ -28,11 +30,11 @@ class StateFeedback:
     state: InteractionState
     cursor_px: tuple[int, int]
     gesture_label: str
-    clicked_event: Optional[str] = None  # "LEFT", "RIGHT", "MIDDLE", or None
+    clicked_event: Optional[str] = None  # "LEFT", "RIGHT", "MIDDLE", "MINIMIZE", "CLOSE", "BLOCKED"
 
 
 class InteractionStateMachine:
-    """Prevents double-click bounce and cursor drift during pinch clicks."""
+    """Prevents double-click bounce, cursor drift, and handles Iron-Man window gestures."""
 
     def __init__(
         self,
@@ -46,17 +48,23 @@ class InteractionStateMachine:
 
         self.state = InteractionState.SLEEP_IDLE
         self._cursor_px: tuple[int, int] = (0, 0)
-        self._hover_history: Deque[tuple[int, int]] = deque(maxlen=4)
+        self._hover_history: Deque[tuple[int, int]] = deque(maxlen=5)
         self._pinch_start_t: float = 0.0
         self._anchor_px: tuple[int, int] = (0, 0)
-        self._last_click_t: float = 0.0
+        self._last_click_t: float = -10.0
 
-        # Edge-trigger latches for secondary/middle pinches
+        # Edge-trigger latches
         self._prev_secondary = False
         self._prev_middle = False
+        self._prev_fist = False
 
-        # Scroll tracking
+        # Open-palm -> Fist window gesture timer
+        self._palm_ready_until: float = 0.0
+        self._last_window_cmd_t: float = -10.0
+
+        # Scroll & Bimanual zoom tracking
         self._prev_scroll_y: Optional[float] = None
+        self._prev_zoom_span: Optional[float] = None
 
     def _can_click(self, now: float) -> bool:
         return (now - self._last_click_t) >= self._cfg.click_cooldown_sec
@@ -73,15 +81,80 @@ class InteractionStateMachine:
             self._hover_history.clear()
             self._prev_secondary = False
             self._prev_middle = False
+            self._prev_fist = False
             self._prev_scroll_y = None
+            self._prev_zoom_span = None
             return StateFeedback(
                 state=self.state,
                 cursor_px=self._cursor_px,
                 gesture_label="STANDBY",
             )
 
-        # Wake from sleep -> reset filter so cursor doesn't jump from stale coords
+        # Wake from sleep -> sync with OS cursor and reset filter (zero jump)
         if self.state == InteractionState.SLEEP_IDLE:
+            try:
+                cur = self._backend.get_cursor_pos()
+                self._mapper.set_cursor_px(*cur)
+                self._cursor_px = cur
+            except Exception:
+                pass
+            self._mapper.reset()
+            self.state = InteractionState.HOVER
+
+        # --- Iron-Man Bimanual Zoom ---
+        if intent == IntentType.BIMANUAL_ZOOM:
+            self.state = InteractionState.ZOOMING
+            if self._prev_zoom_span is not None:
+                d_span = intent_frame.bimanual_span - self._prev_zoom_span
+                if abs(d_span) > 0.008:
+                    self._backend.ctrl_scroll(int(d_span * 1800))
+            self._prev_zoom_span = intent_frame.bimanual_span
+            return StateFeedback(
+                state=self.state,
+                cursor_px=self._cursor_px,
+                gesture_label="2-HAND ZOOM",
+            )
+        self._prev_zoom_span = None
+
+        # --- Open Palm -> Fist (Minimize / Bimanual Close) + Fist Clutch ---
+        if intent == IntentType.PALM_READY:
+            self._palm_ready_until = now + self._cfg.palm_fist_window_sec
+            self._prev_fist = False
+            # Open palm also acts as a comfortable pause/clutch so cursor stays still
+            self._mapper.reset()
+            self.state = InteractionState.CLUTCH
+            return StateFeedback(
+                state=self.state,
+                cursor_px=self._cursor_px,
+                gesture_label="PALM READY" + (" (+2ND)" if intent_frame.secondary_open_palm else ""),
+            )
+
+        if intent == IntentType.FIST_ACTIVATE:
+            is_rising_fist = not self._prev_fist
+            self._prev_fist = True
+            if is_rising_fist and now <= self._palm_ready_until and (now - self._last_window_cmd_t) > 1.2:
+                self._palm_ready_until = 0.0
+                self._last_window_cmd_t = now
+                if intent_frame.secondary_open_palm:
+                    closed = self._backend.close_foreground_window(self._cfg.protected_apps)
+                    clicked_event = "CLOSE" if closed else "BLOCKED"
+                else:
+                    self._backend.minimize_foreground_window()
+                    clicked_event = "MINIMIZE"
+
+            # Fist acts as Trackpad Clutch (re-center your hand comfortably!)
+            self._mapper.reset()
+            self.state = InteractionState.CLUTCH
+            return StateFeedback(
+                state=self.state,
+                cursor_px=self._cursor_px,
+                gesture_label="CLUTCH",
+                clicked_event=clicked_event,
+            )
+        self._prev_fist = False
+
+        # Re-entering hover from Clutch resets filter cleanly
+        if self.state == InteractionState.CLUTCH:
             self._mapper.reset()
             self.state = InteractionState.HOVER
 
@@ -109,7 +182,6 @@ class InteractionStateMachine:
         if intent == IntentType.PRIMARY_HOLD:
             self._prev_scroll_y = None
             if self.state in (InteractionState.HOVER, InteractionState.SCROLLING):
-                # Anchor to pre-pinch lookback position (2-3 frames before contact)
                 if self._hover_history:
                     self._anchor_px = self._hover_history[0]
                 else:
@@ -118,7 +190,6 @@ class InteractionStateMachine:
                 self.state = InteractionState.PINCH_LOCK
             elif self.state == InteractionState.PINCH_LOCK:
                 if (now - self._pinch_start_t) >= self._cfg.drag_hold_sec:
-                    # Transition to drag: press left button & unfreeze cursor
                     self._backend.mouse_down(MouseButton.LEFT)
                     self.state = InteractionState.DRAGGING
                     self._cursor_px = mapped_px

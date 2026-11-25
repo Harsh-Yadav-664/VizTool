@@ -186,3 +186,60 @@ class Win32InputBackend:
                 ii=_InputUnion(ki=_KeybdInput(vk, 0, KEYEVENTF_KEYUP, 0, self._extra_ptr)),
             )
         user32.SendInput(n * 2, inputs, ctypes.sizeof(_Input))
+
+    @staticmethod
+    def get_cursor_pos() -> tuple[int, int]:
+        pt = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
+        return int(pt.x), int(pt.y)
+
+    @staticmethod
+    def get_foreground_title() -> str:
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return ""
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        return buf.value
+
+    @staticmethod
+    def minimize_foreground_window() -> None:
+        hwnd = user32.GetForegroundWindow()
+        if hwnd:
+            user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+
+    def close_foreground_window(self, protected_keywords: list[str]) -> bool:
+        """Close active window via Alt+F4 unless its title matches protected_keywords."""
+        title = self.get_foreground_title().lower()
+        if any(k.lower() in title for k in protected_keywords):
+            return False
+        self.send_hotkey(0x12, 0x73)  # VK_MENU (Alt) + VK_F4
+        return True
+
+    def ctrl_scroll(self, delta_y: int) -> None:
+        """Send Ctrl + MouseWheel for spatial zoom."""
+        if not delta_y:
+            return
+        vk_ctrl = 0x11
+        inputs = (_Input * 3)(
+            _Input(
+                type=INPUT_KEYBOARD,
+                ii=_InputUnion(ki=_KeybdInput(vk_ctrl, 0, 0, 0, self._extra_ptr)),
+            ),
+            _Input(
+                type=INPUT_MOUSE,
+                ii=_InputUnion(
+                    mi=_MouseInput(
+                        0, 0, ctypes.c_ulong(delta_y).value, MOUSEEVENTF_WHEEL, 0, self._extra_ptr
+                    )
+                ),
+            ),
+            _Input(
+                type=INPUT_KEYBOARD,
+                ii=_InputUnion(ki=_KeybdInput(vk_ctrl, 0, KEYEVENTF_KEYUP, 0, self._extra_ptr)),
+            ),
+        )
+        user32.SendInput(3, inputs, ctypes.sizeof(_Input))

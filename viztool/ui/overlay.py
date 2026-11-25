@@ -215,7 +215,7 @@ class TranslucentOverlay:
 
         now = time.perf_counter()
 
-        # 1. Draw fingertip cursor ring when active
+        # 1. Draw sci-fi concentric cursor reticle when active
         if self._cfg.show_cursor_ring and fb.state != InteractionState.SLEEP_IDLE:
             cx, cy = fb.cursor_px
             if fb.state == InteractionState.PINCH_LOCK:
@@ -224,9 +224,12 @@ class TranslucentOverlay:
             elif fb.state == InteractionState.DRAGGING:
                 ring_color = _rgb(255, 90, 90)
                 radius = 15
-            elif fb.state == InteractionState.SCROLLING:
-                ring_color = _rgb(80, 180, 255)
-                radius = 16
+            elif fb.state in (InteractionState.SCROLLING, InteractionState.ZOOMING):
+                ring_color = _rgb(80, 190, 255)
+                radius = 17
+            elif fb.state == InteractionState.CLUTCH:
+                ring_color = _rgb(140, 150, 165)
+                radius = 10
             else:
                 ring_color = _rgb(0, 235, 160)
                 radius = 14
@@ -235,8 +238,13 @@ class TranslucentOverlay:
             old_pen = gdi32.SelectObject(mem_dc, pen)
             old_brush = gdi32.SelectObject(mem_dc, gdi32.GetStockObject(NULL_BRUSH))
             gdi32.Ellipse(mem_dc, cx - radius, cy - radius, cx + radius, cy + radius)
+            # Inner precision dot
+            dot_b = gdi32.CreateSolidBrush(ring_color)
+            gdi32.SelectObject(mem_dc, dot_b)
+            gdi32.Ellipse(mem_dc, cx - 2, cy - 2, cx + 2, cy + 2)
             gdi32.SelectObject(mem_dc, old_brush)
             gdi32.SelectObject(mem_dc, old_pen)
+            gdi32.DeleteObject(dot_b)
             gdi32.DeleteObject(pen)
 
         # 2. Draw click ripple animation

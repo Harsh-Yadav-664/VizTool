@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import numpy as np
 
 from viztool.tracking.hand_tracker import TrackedHand
@@ -14,7 +15,7 @@ class HandFeatures:
 
     handedness: str
     palm_size_3d: float
-    pointer_xy: tuple[float, float]  # Normalized [0..1] image coords for screen mapping
+    pointer_xy: tuple[float, float]  # Stable knuckle anchor in [0..1] image coords
     pointer_z: float                 # Relative depth
     palm_center_xy: tuple[float, float]
 
@@ -24,7 +25,7 @@ class HandFeatures:
     thumb_ring_ratio: float
     thumb_pinky_ratio: float
 
-    # 3D joint extension angles (degrees, ~180 = straight, < 110 = curled)
+    # 3D joint extension states (orientation-invariant)
     thumb_straight: bool
     index_straight: bool
     middle_straight: bool
@@ -47,10 +48,17 @@ def _is_finger_straight_3d(pts: np.ndarray, mcp: int, pip: int, dip: int, tip: i
     v1 = pts[pip] - pts[mcp]
     v2 = pts[dip] - pts[pip]
     v3 = pts[tip] - pts[dip]
-    # Small angle between consecutive bone vectors means straight finger
     a1 = _angle_deg(v1, v2)
     a2 = _angle_deg(v2, v3)
-    return (a1 + a2) < 55.0
+    return (a1 + a2) < 62.0
+
+
+def _weighted_pinch_ratio(p1: np.ndarray, p2: np.ndarray, palm_size: float) -> float:
+    """3D distance with dampened Z-noise for reliable pinching at any tilt angle."""
+    dx = float(p1[0] - p2[0])
+    dy = float(p1[1] - p2[1])
+    dz = float(p1[2] - p2[2]) * 0.40
+    return math.sqrt(dx * dx + dy * dy + dz * dz) / palm_size
 
 
 def extract_hand_features(hand: TrackedHand) -> HandFeatures:
@@ -63,22 +71,24 @@ def extract_hand_features(hand: TrackedHand) -> HandFeatures:
     if palm_size < 1e-4:
         palm_size = 0.08
 
-    # Normalized 3D pinch ratios (immune to camera angle & hand distance)
+    # Normalized pinch ratios (immune to camera angle & hand distance)
     thumb_tip = w[4]
-    ti_ratio = float(np.linalg.norm(thumb_tip - w[8])) / palm_size
-    tm_ratio = float(np.linalg.norm(thumb_tip - w[12])) / palm_size
-    tr_ratio = float(np.linalg.norm(thumb_tip - w[16])) / palm_size
-    tp_ratio = float(np.linalg.norm(thumb_tip - w[20])) / palm_size
+    ti_ratio = _weighted_pinch_ratio(thumb_tip, w[8], palm_size)
+    tm_ratio = _weighted_pinch_ratio(thumb_tip, w[12], palm_size)
+    tr_ratio = _weighted_pinch_ratio(thumb_tip, w[16], palm_size)
+    tp_ratio = _weighted_pinch_ratio(thumb_tip, w[20], palm_size)
 
     # 3D bone-angle finger extension checks (works at any palm angle)
-    thumb_straight = _angle_deg(w[2] - w[1], w[4] - w[3]) < 42.0
+    thumb_straight = _angle_deg(w[2] - w[1], w[4] - w[3]) < 45.0
     index_straight = _is_finger_straight_3d(w, 5, 6, 7, 8)
     middle_straight = _is_finger_straight_3d(w, 9, 10, 11, 12)
     ring_straight = _is_finger_straight_3d(w, 13, 14, 15, 16)
     pinky_straight = _is_finger_straight_3d(w, 17, 18, 19, 20)
 
-    # Pointer uses index fingertip in image space (intuitive pointing)
-    px, py, pz = float(img[8, 0]), float(img[8, 1]), float(img[8, 2])
+    # Knuckle Anchor (Index MCP 5 + Middle MCP 9): stays rock-solid when curling fingers to pinch!
+    px = float(0.60 * img[5, 0] + 0.40 * img[9, 0])
+    py = float(0.60 * img[5, 1] + 0.40 * img[9, 1])
+    pz = float(img[9, 2])
     cx, cy = float(img[9, 0]), float(img[9, 1])
 
     return HandFeatures(

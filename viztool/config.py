@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 
 
 @dataclass
@@ -20,31 +20,46 @@ class CameraConfig:
 
 @dataclass
 class TrackingConfig:
+    model_path: str = "models/hand_landmarker.task"
     max_num_hands: int = 2
     model_complexity: int = 0
-    min_detection_confidence: float = 0.65
-    min_tracking_confidence: float = 0.65
+    min_detection_confidence: float = 0.60
+    min_tracking_confidence: float = 0.60
 
 
 @dataclass
 class KinematicsConfig:
-    filter_min_cutoff: float = 1.15
-    filter_beta: float = 0.007
+    tracking_mode: str = "relative"  # "relative" (ergonomic air-trackpad) or "absolute"
+    relative_sensitivity: float = 2.4
+    accel_gamma: float = 1.35
+    filter_min_cutoff: float = 1.25
+    filter_beta: float = 0.012
     filter_d_cutoff: float = 1.0
     roi_margin_x: float = 0.16
     roi_margin_y: float = 0.16
-    accel_gamma: float = 1.25
-    deadzone_px: float = 1.2
+    deadzone_px: float = 0.8
 
 
 @dataclass
 class GestureConfig:
-    pinch_enter_ratio: float = 0.30
-    pinch_exit_ratio: float = 0.42
+    pinch_enter_ratio: float = 0.34
+    pinch_exit_ratio: float = 0.46
     drag_hold_sec: float = 0.24
-    click_cooldown_sec: float = 0.16
-    scroll_sensitivity: int = 1200
-    scroll_deadzone: float = 0.008
+    click_cooldown_sec: float = 0.18
+    scroll_sensitivity: int = 1400
+    scroll_deadzone: float = 0.006
+    palm_fist_window_sec: float = 1.4
+    protected_apps: List[str] = field(
+        default_factory=lambda: [
+            "code",
+            "visual studio",
+            "pycharm",
+            "powershell",
+            "cmd",
+            "windowsterminal",
+            "viztool",
+        ]
+    )
 
 
 @dataclass
@@ -52,6 +67,7 @@ class UIConfig:
     overlay_enabled: bool = True
     show_cursor_ring: bool = True
     show_status_pill: bool = True
+    tray_enabled: bool = True
 
 
 @dataclass

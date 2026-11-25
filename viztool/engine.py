@@ -1,4 +1,4 @@
-"""Main VizTool pipeline orchestrator with Adaptive Power Governor."""
+"""Main VizTool pipeline orchestrator with Adaptive Power Governor & System Tray."""
 
 from __future__ import annotations
 
@@ -11,9 +11,10 @@ from viztool.gestures.gesture_detector import GestureDetector
 from viztool.intent.intent_resolver import resolve_intent
 from viztool.kinematics.coordinate_mapper import CoordinateMapper
 from viztool.kinematics.hand_kinematics import extract_hand_features
-from viztool.state.state_machine import InteractionStateMachine
+from viztool.state.state_machine import InteractionState, InteractionStateMachine, StateFeedback
 from viztool.tracking.hand_tracker import HandTracker
 from viztool.ui.overlay import TranslucentOverlay
+from viztool.ui.tray import VizTray
 
 
 class VizToolEngine:
@@ -32,27 +33,66 @@ class VizToolEngine:
             cfg.gestures, self._mapper, self._backend
         )
         self._overlay = TranslucentOverlay(cfg.ui)
+        self._tray = (
+            VizTray(
+                on_toggle_pause=self.toggle_pause,
+                on_toggle_mode=self.toggle_tracking_mode,
+                on_exit=self.request_stop,
+            )
+            if cfg.ui.tray_enabled
+            else None
+        )
+        self._running = False
+        self._paused = False
+
+    def toggle_pause(self) -> bool:
+        self._paused = not self._paused
+        self._camera.set_idle_mode(self._paused)
+        if self._paused:
+            self._overlay.update(
+                StateFeedback(
+                    state=InteractionState.SLEEP_IDLE,
+                    cursor_px=(0, 0),
+                    gesture_label="PAUSED",
+                )
+            )
+        return self._paused
+
+    def toggle_tracking_mode(self) -> str:
+        cur = self._cfg.kinematics.tracking_mode
+        nxt = "absolute" if cur == "relative" else "relative"
+        self._cfg.kinematics.tracking_mode = nxt
+        self._mapper.reset()
+        return nxt
+
+    def request_stop(self) -> None:
         self._running = False
 
     def run(self) -> None:
-        """Start camera, overlay, and main processing loop until interrupted."""
+        """Start camera, overlay, tray, and main processing loop until interrupted."""
         self._camera.start()
         self._overlay.start()
+        if self._tray is not None:
+            self._tray.start()
         self._running = True
 
         last_hand_seen = time.perf_counter()
         is_idle = False
 
-        print("VizTool Phase 1 Engine active (headless mode, no camera window).")
-        print("Press Ctrl+C in this terminal to stop.")
+        print(f"VizTool active ({self._cfg.kinematics.tracking_mode} mode, headless).")
+        print("Use the System Tray icon or press Ctrl+C in this terminal to stop.")
 
         try:
             while self._running:
+                if self._paused:
+                    time.sleep(0.15)
+                    continue
+
                 frame, ts = self._camera.read_latest(timeout=0.25)
                 if frame is None:
                     continue
 
-                hands = self._tracker.process(frame)
+                hands = self._tracker.process(frame, ts)
                 now = ts if ts > 0 else time.perf_counter()
 
                 if hands:
@@ -61,10 +101,13 @@ class VizToolEngine:
                         is_idle = False
                         self._camera.set_idle_mode(False)
 
-                    # Primary hand (first detected; bimanual chord added in Phase 3)
-                    features = extract_hand_features(hands[0])
-                    gframe = self._detector.detect(features)
-                    intent = resolve_intent(gframe)
+                    primary_feat = extract_hand_features(hands[0])
+                    primary_g = self._detector.detect(primary_feat)
+                    sec_g = None
+                    if len(hands) > 1:
+                        sec_feat = extract_hand_features(hands[1])
+                        sec_g = self._detector.detect(sec_feat)
+                    intent = resolve_intent(primary_g, sec_g)
                 else:
                     self._detector.reset()
                     intent = resolve_intent(None)
@@ -81,6 +124,8 @@ class VizToolEngine:
 
     def stop(self) -> None:
         self._running = False
+        if self._tray is not None:
+            self._tray.stop()
         self._overlay.stop()
         self._camera.stop()
         self._tracker.close()
