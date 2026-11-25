@@ -1,4 +1,4 @@
-"""Movable Rainmeter-style corner mini-widget pill (WS_EX_NOACTIVATE)."""
+"""GDI+ glassmorphic movable corner mini-widget pill (WS_EX_NOACTIVATE)."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from typing import Callable, Optional
 
 from viztool.modes.mode_types import AppMode
 from viztool.state.state_machine import InteractionState, StateFeedback
+from viztool.ui.gdiplus_canvas import LayeredCanvas, argb
 
 user32 = ctypes.windll.user32
-gdi32 = ctypes.windll.gdi32
 kernel32 = ctypes.windll.kernel32
 
 WS_POPUP = 0x80000000
@@ -21,19 +21,12 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_LAYERED = 0x00080000
 WS_EX_NOACTIVATE = 0x08000000
 
-LWA_ALPHA = 0x00000002
-WM_PAINT = 0x000F
 WM_DESTROY = 0x0002
 WM_LBUTTONDOWN = 0x0201
 WM_RBUTTONUP = 0x0205
 WM_NCLBUTTONDOWN = 0x00A1
 HTCAPTION = 2
 WM_APP_REDRAW = 0x8004
-
-PS_SOLID = 0
-TRANSPARENT_BK = 1
-DT_VCENTER = 0x0004
-DT_SINGLELINE = 0x0020
 
 WNDPROC = ctypes.WINFUNCTYPE(
     ctypes.c_longlong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long,
@@ -61,26 +54,11 @@ class _WNDCLASSEXW(ctypes.Structure):
     ]
 
 
-class _PAINTSTRUCT(ctypes.Structure):
-    _fields_ = [
-        ("hdc", wintypes.HDC),
-        ("fErase", wintypes.BOOL),
-        ("rcPaint", wintypes.RECT),
-        ("fRestore", wintypes.BOOL),
-        ("fIncUpdate", wintypes.BOOL),
-        ("rgbReserved", ctypes.c_byte * 32),
-    ]
-
-
-def _rgb(r: int, g: int, b: int) -> int:
-    return r | (g << 8) | (b << 16)
-
-
 class CornerMiniWidget:
-    """Draggable translucent corner pill: drag to reposition, click right-side to cycle modes."""
+    """Draggable anti-aliased glass pill: drag left side, click mode badge, right-click settings."""
 
-    PILL_W = 220
-    PILL_H = 36
+    PILL_W = 248
+    PILL_H = 42
 
     def __init__(
         self,
@@ -100,6 +78,8 @@ class CornerMiniWidget:
             gesture_label="STANDBY",
         )
         self._wndproc_ref = None
+        self._canvas: Optional[LayeredCanvas] = None
+        self._pos = (0, 16)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -125,8 +105,7 @@ class CornerMiniWidget:
 
     def _ui_loop(self) -> None:
         h_inst = kernel32.GetModuleHandleW(None)
-        cls_name = f"VizMiniWidget_{id(self)}"
-        bg_brush = gdi32.CreateSolidBrush(_rgb(20, 24, 32))
+        cls_name = f"VizGdiMiniWidget_{id(self)}"
 
         def wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
             if msg == WM_RBUTTONUP and self._on_open_settings is not None:
@@ -134,17 +113,17 @@ class CornerMiniWidget:
                 return 0
             if msg == WM_LBUTTONDOWN:
                 x_pos = lparam & 0xFFFF
-                if x_pos >= self.PILL_W - 68:
+                if x_pos >= self.PILL_W - 86:
                     self._on_cycle_mode()
                 else:
                     user32.ReleaseCapture()
                     user32.SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)
                 return 0
-            if msg == WM_APP_REDRAW:
-                user32.InvalidateRect(hwnd, None, False)
+            if msg == 0x0003:  # WM_MOVE
+                self._pos = (ctypes.c_short(lparam & 0xFFFF).value, ctypes.c_short((lparam >> 16) & 0xFFFF).value)
                 return 0
-            if msg == WM_PAINT:
-                self._on_paint(hwnd, bg_brush)
+            if msg == WM_APP_REDRAW:
+                self._render(hwnd)
                 return 0
             if msg == WM_DESTROY:
                 user32.PostQuitMessage(0)
@@ -156,28 +135,20 @@ class CornerMiniWidget:
         wc.cbSize = ctypes.sizeof(_WNDCLASSEXW)
         wc.lpfnWndProc = self._wndproc_ref
         wc.hInstance = h_inst
-        wc.hBrush = bg_brush
         wc.lpszClassName = cls_name
         user32.RegisterClassExW(ctypes.byref(wc))
 
         sw = user32.GetSystemMetrics(0)
+        self._pos = (sw - self.PILL_W - 18, 16)
         ex_style = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
         hwnd = user32.CreateWindowExW(
-            ex_style,
-            cls_name,
-            "VizTool Pill",
-            WS_POPUP | WS_VISIBLE,
-            sw - self.PILL_W - 18,
-            16,
-            self.PILL_W,
-            self.PILL_H,
-            None,
-            None,
-            h_inst,
-            None,
+            ex_style, cls_name, "VizTool Pill", WS_POPUP | WS_VISIBLE,
+            self._pos[0], self._pos[1], self.PILL_W, self.PILL_H,
+            None, None, h_inst, None,
         )
         self._hwnd = hwnd
-        user32.SetLayeredWindowAttributes(hwnd, 0, 225, LWA_ALPHA)
+        self._canvas = LayeredCanvas(self.PILL_W, self.PILL_H)
+        self._render(hwnd)
         user32.ShowWindow(hwnd, 8)
         self._ready.set()
 
@@ -186,50 +157,48 @@ class CornerMiniWidget:
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
 
-        gdi32.DeleteObject(bg_brush)
+        if self._canvas is not None:
+            self._canvas.dispose()
+            self._canvas = None
 
-    def _on_paint(self, hwnd: int, bg_brush: int) -> None:
-        ps = _PAINTSTRUCT()
-        hdc = user32.BeginPaint(hwnd, ctypes.byref(ps))
-
-        mem_dc = gdi32.CreateCompatibleDC(hdc)
-        bmp = gdi32.CreateCompatibleBitmap(hdc, self.PILL_W, self.PILL_H)
-        old_bmp = gdi32.SelectObject(mem_dc, bmp)
-        user32.FillRect(mem_dc, ctypes.byref(wintypes.RECT(0, 0, self.PILL_W, self.PILL_H)), bg_brush)
-
-        border_pen = gdi32.CreatePen(PS_SOLID, 1, _rgb(60, 78, 98))
-        old_pen = gdi32.SelectObject(mem_dc, border_pen)
-        old_brush = gdi32.SelectObject(mem_dc, gdi32.GetStockObject(5))
-        gdi32.Rectangle(mem_dc, 0, 0, self.PILL_W, self.PILL_H)
-        gdi32.SelectObject(mem_dc, old_brush)
-        gdi32.SelectObject(mem_dc, old_pen)
-        gdi32.DeleteObject(border_pen)
-
+    def _render(self, hwnd: int) -> None:
+        c = self._canvas
+        if c is None:
+            return
         with self._lock:
             fb = self._feedback
 
-        dot_col = _rgb(125, 135, 150) if fb.state == InteractionState.SLEEP_IDLE else _rgb(0, 235, 160)
-        dot_b = gdi32.CreateSolidBrush(dot_col)
-        ob = gdi32.SelectObject(mem_dc, dot_b)
-        gdi32.Ellipse(mem_dc, 10, 13, 20, 23)
-        gdi32.SelectObject(mem_dc, ob)
-        gdi32.DeleteObject(dot_b)
+        c.clear()
+        c.fill_round_rect(
+            1.0, 1.0, self.PILL_W - 2.0, self.PILL_H - 2.0, 19.0,
+            argb(215, 16, 21, 30), argb(180, 65, 95, 125), 1.4,
+        )
 
-        gdi32.SetBkMode(mem_dc, TRANSPARENT_BK)
-        gdi32.SetTextColor(mem_dc, _rgb(235, 242, 250))
-        left_rc = wintypes.RECT(26, 2, self.PILL_W - 72, self.PILL_H - 2)
-        user32.DrawTextW(mem_dc, fb.gesture_label, len(fb.gesture_label), ctypes.byref(left_rc), DT_VCENTER | DT_SINGLELINE)
+        # Status LED
+        if fb.state == InteractionState.SLEEP_IDLE:
+            dot_col = argb(220, 130, 140, 155)
+        elif fb.state in (InteractionState.PINCH_LOCK, InteractionState.RADIAL_MENU):
+            dot_col = argb(255, 255, 200, 50)
+        else:
+            dot_col = argb(255, 0, 238, 170)
 
-        # Mode pill button on right side
-        btn_b = gdi32.CreateSolidBrush(_rgb(32, 46, 62))
-        user32.FillRect(mem_dc, ctypes.byref(wintypes.RECT(self.PILL_W - 68, 5, self.PILL_W - 6, self.PILL_H - 5)), btn_b)
-        gdi32.DeleteObject(btn_b)
-        gdi32.SetTextColor(mem_dc, _rgb(0, 225, 180))
-        mode_rc = wintypes.RECT(self.PILL_W - 66, 5, self.PILL_W - 8, self.PILL_H - 5)
-        user32.DrawTextW(mem_dc, fb.mode.value, len(fb.mode.value), ctypes.byref(mode_rc), 0x0001 | DT_VCENTER | DT_SINGLELINE)
+        c.fill_circle(19.0, self.PILL_H / 2.0, 5.5, dot_col)
+        c.draw_circle(19.0, self.PILL_H / 2.0, 8.5, (dot_col & 0x00FFFFFF) | 0x55000000, 1.4)
 
-        gdi32.BitBlt(hdc, 0, 0, self.PILL_W, self.PILL_H, mem_dc, 0, 0, 0x00CC0020)
-        gdi32.SelectObject(mem_dc, old_bmp)
-        gdi32.DeleteObject(bmp)
-        gdi32.DeleteDC(mem_dc)
-        user32.EndPaint(hwnd, ctypes.byref(ps))
+        # Gesture Label
+        c.draw_text(
+            fb.gesture_label, 34.0, 2.0, self.PILL_W - 124.0, self.PILL_H - 4.0,
+            argb(245, 235, 242, 252), 9.5, bold=False, center=False,
+        )
+
+        # Mode Pill Button
+        c.fill_round_rect(
+            self.PILL_W - 86.0, 6.0, 78.0, self.PILL_H - 12.0, 13.0,
+            argb(220, 26, 44, 58), argb(160, 0, 220, 180), 1.2,
+        )
+        c.draw_text(
+            fb.mode.value, self.PILL_W - 86.0, 6.0, 78.0, self.PILL_H - 12.0,
+            argb(255, 0, 240, 185), 9.0, bold=True, center=True,
+        )
+
+        c.present(hwnd, self._pos[0], self._pos[1])

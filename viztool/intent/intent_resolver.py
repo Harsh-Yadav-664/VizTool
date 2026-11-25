@@ -74,9 +74,7 @@ def resolve_intent(
         intent = IntentType.PRIMARY_HOLD
     elif g == GestureType.MIDDLE_PINCH:
         intent = IntentType.SECONDARY_TRIGGER
-    elif g == GestureType.RING_PINCH:
-        intent = IntentType.MIDDLE_TRIGGER
-    elif g == GestureType.PINKY_PINCH:
+    elif g == GestureType.CLUSTER_PINCH:
         intent = IntentType.RADIAL_HOLD
     elif g == GestureType.TWO_FINGER_SCROLL:
         intent = IntentType.SCROLL_PAN

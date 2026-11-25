@@ -1,9 +1,10 @@
-"""Stateless & hysteresis-protected 3D geometric gesture detector."""
+"""Hysteresis-protected, biomechanically guarded 3D gesture detector."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional
 
 from viztool.config import GestureConfig
 from viztool.kinematics.hand_kinematics import HandFeatures
@@ -14,8 +15,7 @@ class GestureType(str, Enum):
     HOVER = "HOVER"
     INDEX_PINCH = "INDEX_PINCH"
     MIDDLE_PINCH = "MIDDLE_PINCH"
-    RING_PINCH = "RING_PINCH"
-    PINKY_PINCH = "PINKY_PINCH"
+    CLUSTER_PINCH = "CLUSTER_PINCH"  # Thumb+Index+Middle together -> Radial Menu (zero pinky pain!)
     TWO_FINGER_SCROLL = "TWO_FINGER_SCROLL"
     OPEN_PALM = "OPEN_PALM"
     FIST = "FIST"
@@ -29,7 +29,13 @@ class SchmittTrigger:
         self._exit = exit_thresh
         self.active = False
 
-    def update(self, value: float) -> bool:
+    def update(self, value: float, allowed: bool = True) -> bool:
+        if not allowed:
+            # Force release only if value rises or finger clearly tucked into fist
+            if self.active and value > self._enter + 0.04:
+                self.active = False
+            return self.active
+
         if not self.active and value < self._enter:
             self.active = True
         elif self.active and value > self._exit:
@@ -45,53 +51,63 @@ class GestureFrame:
     primary_gesture: GestureType
     index_pinch: bool
     middle_pinch: bool
-    ring_pinch: bool
-    pinky_pinch: bool
+    cluster_pinch: bool
     air_poke: bool
     pointer_xy: tuple[float, float]
     palm_center_xy: tuple[float, float]
 
 
 class GestureDetector:
-    """Classifies 3D hand features into bounce-free semantic gestures."""
+    """Classifies 3D hand features into bounce-free, curl-guarded gestures."""
 
     def __init__(self, cfg: GestureConfig) -> None:
+        self._cfg = cfg
         self._index_gate = SchmittTrigger(cfg.pinch_enter_ratio, cfg.pinch_exit_ratio)
         self._middle_gate = SchmittTrigger(cfg.pinch_enter_ratio, cfg.pinch_exit_ratio)
-        self._ring_gate = SchmittTrigger(cfg.pinch_enter_ratio, cfg.pinch_exit_ratio)
-        self._pinky_gate = SchmittTrigger(cfg.pinch_enter_ratio, cfg.pinch_exit_ratio)
-        self._prev_z: float | None = None
+        self._cluster_gate = SchmittTrigger(cfg.pinch_enter_ratio + 0.08, cfg.pinch_exit_ratio + 0.08)
+        self._prev_z: Optional[float] = None
 
     def reset(self) -> None:
         self._index_gate.reset()
         self._middle_gate.reset()
-        self._ring_gate.reset()
-        self._pinky_gate.reset()
+        self._cluster_gate.reset()
         self._prev_z = None
 
     def detect(self, feat: HandFeatures) -> GestureFrame:
-        idx_pinch = self._index_gate.update(feat.thumb_index_ratio)
-        mid_pinch = self._middle_gate.update(feat.thumb_middle_ratio)
-        ring_pinch = self._ring_gate.update(feat.thumb_ring_ratio)
-        pinky_pinch = self._pinky_gate.update(feat.thumb_pinky_ratio)
+        # 1. Check 3-finger Cluster Pinch (Thumb + Index + Middle all reaching together)
+        cluster_metric = max(feat.thumb_index_ratio, feat.thumb_middle_ratio)
+        cluster_ok = feat.index_reaching and feat.middle_reaching
+        cluster_pinch = self._cluster_gate.update(cluster_metric, allowed=cluster_ok)
 
-        # Air-Poke: rapid forward Z-impulse of index tip while index is straight
+        # 2. Winner-take-all + Curl Guard prevents closed middle finger from triggering MIDDLE_PINCH
+        idx_allowed = (
+            feat.index_reaching
+            and not cluster_pinch
+            and (feat.thumb_index_ratio <= feat.thumb_middle_ratio + 0.06)
+        )
+        mid_allowed = (
+            feat.middle_reaching
+            and not cluster_pinch
+            and (feat.thumb_middle_ratio + 0.05 < feat.thumb_index_ratio)
+        )
+
+        idx_pinch = self._index_gate.update(feat.thumb_index_ratio, allowed=idx_allowed)
+        mid_pinch = self._middle_gate.update(feat.thumb_middle_ratio, allowed=mid_allowed)
+
+        # 3. Air-Poke: rapid forward Z-impulse of index tip
         air_poke = False
         if self._prev_z is not None and feat.index_straight and not idx_pinch:
             dz = feat.pointer_z - self._prev_z
-            if dz < -0.018:
+            if dz < -0.020:
                 air_poke = True
         self._prev_z = feat.pointer_z
 
-        # Priority order prevents overlapping triggers
-        if idx_pinch:
+        if cluster_pinch:
+            gesture = GestureType.CLUSTER_PINCH
+        elif idx_pinch:
             gesture = GestureType.INDEX_PINCH
         elif mid_pinch:
             gesture = GestureType.MIDDLE_PINCH
-        elif ring_pinch:
-            gesture = GestureType.RING_PINCH
-        elif pinky_pinch:
-            gesture = GestureType.PINKY_PINCH
         elif (
             feat.index_straight
             and feat.middle_straight
@@ -121,8 +137,7 @@ class GestureDetector:
             primary_gesture=gesture,
             index_pinch=idx_pinch,
             middle_pinch=mid_pinch,
-            ring_pinch=ring_pinch,
-            pinky_pinch=pinky_pinch,
+            cluster_pinch=cluster_pinch,
             air_poke=air_poke,
             pointer_xy=feat.pointer_xy,
             palm_center_xy=feat.palm_center_xy,

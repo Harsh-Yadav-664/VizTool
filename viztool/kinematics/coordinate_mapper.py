@@ -41,9 +41,10 @@ class CoordinateMapper:
 
         if self._cfg.tracking_mode == "absolute":
             mx = self._cfg.roi_margin_x
-            my = self._cfg.roi_margin_y
+            top_m = max(0.08, self._cfg.roi_margin_y * 0.65)
+            bot_m = min(0.32, self._cfg.roi_margin_y * 1.75)  # Asymmetric bottom margin for easy Taskbar clicks
             roi_x = max(0.0, min(1.0, (sx - mx) / max(0.1, 1.0 - 2.0 * mx)))
-            roi_y = max(0.0, min(1.0, (sy - my) / max(0.1, 1.0 - 2.0 * my)))
+            roi_y = max(0.0, min(1.0, (sy - top_m) / max(0.1, 1.0 - top_m - bot_m)))
             tx = self._vx + roi_x * (self._vw - 1)
             ty = self._vy + roi_y * (self._vh - 1)
             self._cursor_f = (tx, ty)

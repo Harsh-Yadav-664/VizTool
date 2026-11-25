@@ -1,4 +1,4 @@
-"""Unit tests for VizTool Phase 1 core pipeline (no webcam required)."""
+"""Unit tests for VizTool core pipeline, biomechanical guards, GDI+ HUD, and Phase 5."""
 
 import unittest
 from unittest.mock import MagicMock
@@ -7,7 +7,7 @@ import numpy as np
 
 from viztool.config import GestureConfig, KinematicsConfig, TrackingConfig, load_config
 from viztool.gestures.gesture_detector import GestureDetector, GestureType, SchmittTrigger
-from viztool.intent.intent_resolver import IntentType, resolve_intent
+from viztool.intent.intent_resolver import resolve_intent
 from viztool.kinematics.coordinate_mapper import CoordinateMapper
 from viztool.kinematics.hand_kinematics import extract_hand_features
 from viztool.kinematics.one_euro_filter import OneEuroFilter
@@ -19,29 +19,23 @@ from viztool.tracking.hand_tracker import HandTracker, TrackedHand
 def _make_straight_hand_world() -> np.ndarray:
     """Create a synthetic 21x3 open hand in metric world coordinates."""
     pts = np.zeros((21, 3), dtype=np.float32)
-    # Wrist at (0,0,0), Middle MCP at (0, -0.08, 0) -> palm_size = 0.08
     pts[0] = [0.0, 0.0, 0.0]
-    # Thumb
     pts[1] = [-0.02, -0.02, 0.0]
     pts[2] = [-0.04, -0.04, 0.0]
     pts[3] = [-0.05, -0.06, 0.0]
     pts[4] = [-0.06, -0.08, 0.0]
-    # Index
     pts[5] = [-0.03, -0.08, 0.0]
     pts[6] = [-0.03, -0.11, 0.0]
     pts[7] = [-0.03, -0.13, 0.0]
     pts[8] = [-0.03, -0.15, 0.0]
-    # Middle
     pts[9] = [0.0, -0.08, 0.0]
     pts[10] = [0.0, -0.12, 0.0]
     pts[11] = [0.0, -0.14, 0.0]
     pts[12] = [0.0, -0.16, 0.0]
-    # Ring
     pts[13] = [0.025, -0.08, 0.0]
     pts[14] = [0.025, -0.11, 0.0]
     pts[15] = [0.025, -0.13, 0.0]
     pts[16] = [0.025, -0.15, 0.0]
-    # Pinky
     pts[17] = [0.045, -0.075, 0.0]
     pts[18] = [0.045, -0.10, 0.0]
     pts[19] = [0.045, -0.115, 0.0]
@@ -59,19 +53,16 @@ class TestVizToolCore(unittest.TestCase):
         f = OneEuroFilter(min_cutoff=1.0, beta=0.007)
         t = 0.0
         outputs = []
-        # Oscillating +/-0.01 jitter around 0.5
         for i in range(30):
             t += 1.0 / 30.0
             noisy = 0.5 + (0.01 if i % 2 == 0 else -0.01)
             outputs.append(f.filter(t, noisy))
-        # Filtered variance should be far smaller than input amplitude
         self.assertLess(max(outputs[-10:]) - min(outputs[-10:]), 0.006)
 
     def test_3d_kinematics_rotation_invariant(self) -> None:
         w = _make_straight_hand_world()
         img = np.full((21, 3), 0.5, dtype=np.float32)
 
-        # Rotate hand 90 degrees around Z and 45 degrees around X
         rot_z = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=np.float32)
         c, s = np.cos(np.pi / 4), np.sin(np.pi / 4)
         rot_x = np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=np.float32)
@@ -84,26 +75,42 @@ class TestVizToolCore(unittest.TestCase):
         self.assertTrue(f_rot.index_straight)
         self.assertLess(abs(f_orig.thumb_index_ratio - f_rot.thumb_index_ratio), 0.05)
 
+    def test_closed_middle_finger_does_not_false_trigger_middle_pinch(self) -> None:
+        w = _make_straight_hand_world()
+        # Curl middle finger tightly into palm near thumb tip (simulates pointing index with middle closed)
+        w[10] = [0.0, -0.07, -0.02]
+        w[11] = [-0.01, -0.04, -0.02]
+        w[12] = [-0.02, -0.03, -0.01]
+        w[4] = [-0.02, -0.035, 0.0]  # Thumb tucked near curled middle tip!
+        img = np.full((21, 3), 0.5, dtype=np.float32)
+
+        feat = extract_hand_features(TrackedHand("Right", 0.99, img, w))
+        self.assertFalse(feat.middle_reaching)
+        det = GestureDetector(GestureConfig())
+        gf = det.detect(feat)
+        self.assertFalse(gf.middle_pinch)
+
     def test_schmitt_trigger_prevents_bounce(self) -> None:
         trig = SchmittTrigger(enter_thresh=0.30, exit_thresh=0.42)
-        self.assertFalse(trig.update(0.35))  # Not entered yet
-        self.assertTrue(trig.update(0.28))   # Entered
-        # Fluctuates around 0.35 (boundary noise) -> stays active, NO bounce!
+        self.assertFalse(trig.update(0.35))
+        self.assertTrue(trig.update(0.28))
         self.assertTrue(trig.update(0.33))
         self.assertTrue(trig.update(0.39))
-        self.assertFalse(trig.update(0.45))  # Clean exit
+        self.assertFalse(trig.update(0.45))
 
     def test_pinch_anchor_and_single_click_no_multiclick(self) -> None:
         cfg = GestureConfig(drag_hold_sec=0.25, click_cooldown_sec=0.1)
         mapper = CoordinateMapper(KinematicsConfig(deadzone_px=0.0), (0, 0, 1920, 1080))
         backend = MagicMock()
+        backend.get_cursor_pos.return_value = (960, 540)
         sm = InteractionStateMachine(cfg, mapper, backend)
 
-        # Hover at (0.5, 0.5)
-        sm.step(1.00, resolve_intent(None))  # start idle
+        sm.step(1.00, resolve_intent(None))
         hover = resolve_intent(
             MagicMock(
                 primary_gesture=GestureType.HOVER,
+                index_pinch=False,
+                air_poke=False,
                 pointer_xy=(0.5, 0.5),
                 palm_center_xy=(0.5, 0.5),
             )
@@ -112,26 +119,60 @@ class TestVizToolCore(unittest.TestCase):
         self.assertEqual(fb1.state, InteractionState.HOVER)
         anchored_pos = fb1.cursor_px
 
-        # Pinch held for 3 frames while finger drifts to (0.55, 0.55)
         for dt in (1.13, 1.16, 1.19):
             pinch = resolve_intent(
                 MagicMock(
                     primary_gesture=GestureType.INDEX_PINCH,
+                    index_pinch=True,
+                    air_poke=False,
                     pointer_xy=(0.55, 0.55),
                     palm_center_xy=(0.5, 0.5),
                 )
             )
             fb_p = sm.step(dt, pinch)
             self.assertEqual(fb_p.state, InteractionState.PINCH_LOCK)
-            # Cursor MUST stay frozen at anchored_pos!
             self.assertEqual(fb_p.cursor_px, anchored_pos)
 
-        # Still 0 clicks fired while held
         backend.mouse_click.assert_not_called()
-
-        # Release before drag_hold_sec -> fires EXACTLY ONE left click
         fb_rel = sm.step(1.22, hover)
         self.assertEqual(fb_rel.clicked_event, "LEFT")
+        backend.mouse_click.assert_called_once()
+
+    def test_keyboard_mode_allows_normal_click_outside_keyboard(self) -> None:
+        cfg = GestureConfig(click_cooldown_sec=0.1)
+        mapper = CoordinateMapper(
+            KinematicsConfig(tracking_mode="relative", deadzone_px=0.0),
+            (0, 0, 1920, 1080),
+        )
+        backend = MagicMock()
+        backend.get_cursor_pos.return_value = (400, 200)  # Outside keyboard
+        sm = InteractionStateMachine(
+            cfg, mapper, backend, is_point_on_keyboard=lambda x, y: y > 700
+        )
+        sm.set_mode(AppMode.KEYBOARD)
+
+        hover = resolve_intent(
+            MagicMock(
+                primary_gesture=GestureType.HOVER,
+                index_pinch=False,
+                air_poke=False,
+                pointer_xy=(0.5, 0.5),
+                palm_center_xy=(0.5, 0.5),
+            )
+        )
+        pinch = resolve_intent(
+            MagicMock(
+                primary_gesture=GestureType.INDEX_PINCH,
+                index_pinch=True,
+                air_poke=False,
+                pointer_xy=(0.5, 0.5),
+                palm_center_xy=(0.5, 0.5),
+            )
+        )
+        sm.step(1.0, hover)
+        sm.step(1.05, pinch)
+        fb = sm.step(1.10, hover)
+        self.assertEqual(fb.clicked_event, "LEFT")
         backend.mouse_click.assert_called_once()
 
     def test_relative_trackpad_and_bimanual_window_gestures(self) -> None:
@@ -148,32 +189,27 @@ class TestVizToolCore(unittest.TestCase):
         palm = MagicMock(
             primary_gesture=GestureType.OPEN_PALM,
             index_pinch=False,
+            air_poke=False,
             pointer_xy=(0.5, 0.5),
             palm_center_xy=(0.5, 0.5),
         )
         fist = MagicMock(
             primary_gesture=GestureType.FIST,
             index_pinch=False,
+            air_poke=False,
             pointer_xy=(0.5, 0.5),
             palm_center_xy=(0.5, 0.5),
         )
 
-        # Single-hand Open Palm -> Fist = MINIMIZE
         sm.step(1.0, resolve_intent(palm))
         fb_min = sm.step(1.2, resolve_intent(fist))
         self.assertEqual(fb_min.clicked_event, "MINIMIZE")
         backend.minimize_foreground_window.assert_called_once()
 
-        # Bimanual: Open Palm -> Fist while 2nd hand Open Palm = CLOSE
         sm.step(3.0, resolve_intent(palm, palm))
         fb_cls = sm.step(3.2, resolve_intent(fist, palm))
         self.assertEqual(fb_cls.clicked_event, "CLOSE")
         backend.close_foreground_window.assert_called_once()
-
-    def test_hand_landmarker_video_mode_init(self) -> None:
-        tracker = HandTracker(TrackingConfig(model_path="models/hand_landmarker.task"))
-        self.assertTrue(tracker._use_tasks)
-        tracker.close()
 
     def test_radial_menu_switches_mode_to_keyboard(self) -> None:
         cfg = GestureConfig()
@@ -185,42 +221,47 @@ class TestVizToolCore(unittest.TestCase):
         backend.get_cursor_pos.return_value = (960, 540)
         sm = InteractionStateMachine(cfg, mapper, backend)
 
-        pinky_start = MagicMock(
-            primary_gesture=GestureType.PINKY_PINCH,
+        cluster_start = MagicMock(
+            primary_gesture=GestureType.CLUSTER_PINCH,
             index_pinch=False,
+            air_poke=False,
             pointer_xy=(0.5, 0.5),
             palm_center_xy=(0.5, 0.5),
         )
-        pinky_down = MagicMock(
-            primary_gesture=GestureType.PINKY_PINCH,
+        cluster_down = MagicMock(
+            primary_gesture=GestureType.CLUSTER_PINCH,
             index_pinch=False,
-            pointer_xy=(0.5, 0.58),  # Move downward -> KEYBOARD slice
+            air_poke=False,
+            pointer_xy=(0.5, 0.58),
             palm_center_xy=(0.5, 0.58),
         )
         hover = MagicMock(
             primary_gesture=GestureType.HOVER,
             index_pinch=False,
+            air_poke=False,
             pointer_xy=(0.5, 0.58),
             palm_center_xy=(0.5, 0.58),
         )
 
-        sm.step(1.0, resolve_intent(pinky_start))
-        fb_menu = sm.step(1.05, resolve_intent(pinky_down))
+        sm.step(1.0, resolve_intent(cluster_start))
+        fb_menu = sm.step(1.05, resolve_intent(cluster_down))
         self.assertEqual(fb_menu.state, InteractionState.RADIAL_MENU)
         self.assertEqual(fb_menu.radial_selection, AppMode.KEYBOARD)
 
         fb_done = sm.step(1.10, resolve_intent(hover))
         self.assertEqual(fb_done.mode, AppMode.KEYBOARD)
 
-    def test_air_poke_triggers_key_in_keyboard_mode(self) -> None:
+    def test_air_poke_triggers_key_inside_keyboard(self) -> None:
         cfg = GestureConfig(click_cooldown_sec=0.1)
         mapper = CoordinateMapper(
             KinematicsConfig(tracking_mode="relative", deadzone_px=0.0),
             (0, 0, 1920, 1080),
         )
         backend = MagicMock()
-        backend.get_cursor_pos.return_value = (960, 540)
-        sm = InteractionStateMachine(cfg, mapper, backend)
+        backend.get_cursor_pos.return_value = (960, 900)
+        sm = InteractionStateMachine(
+            cfg, mapper, backend, is_point_on_keyboard=lambda x, y: y > 700
+        )
         sm.set_mode(AppMode.KEYBOARD)
 
         poke_g = MagicMock(
@@ -232,6 +273,11 @@ class TestVizToolCore(unittest.TestCase):
         )
         fb = sm.step(2.0, resolve_intent(poke_g))
         self.assertEqual(fb.clicked_event, "KEY_PINCH")
+
+    def test_hand_landmarker_video_mode_init(self) -> None:
+        tracker = HandTracker(TrackingConfig(model_path="models/hand_landmarker.task"))
+        self.assertTrue(tracker._use_tasks)
+        tracker.close()
 
 
 if __name__ == "__main__":

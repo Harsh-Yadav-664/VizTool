@@ -1,7 +1,7 @@
-"""Ultra-lightweight Win32 click-through translucent overlay (no camera window).
+"""Ultra-lightweight GDI+ anti-aliased click-through HUD overlay (no camera window).
 
-Draws real-time fingertip tracking ring, click ripples, Iron-Man Radial Pie Menu,
-Laser Pointer fading trail, and Media Volume HUD using native GDI.
+Renders mirror-like translucent 5/10-finger hologram nodes & skeleton lines,
+sci-fi concentric circular reticle, click ripples, Radial Pie Menu, and Laser trail.
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ from typing import Deque, Optional
 from viztool.config import UIConfig
 from viztool.modes.mode_types import AppMode
 from viztool.state.state_machine import InteractionState, StateFeedback
+from viztool.ui.gdiplus_canvas import LayeredCanvas, argb
 
 user32 = ctypes.windll.user32
-gdi32 = ctypes.windll.gdi32
 kernel32 = ctypes.windll.kernel32
 
 WS_POPUP = 0x80000000
@@ -29,20 +29,17 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_LAYERED = 0x00080000
 WS_EX_NOACTIVATE = 0x08000000
 
-LWA_COLORKEY = 0x00000001
-LWA_ALPHA = 0x00000002
-
-WM_PAINT = 0x000F
 WM_DESTROY = 0x0002
 WM_APP_REDRAW = 0x8001
 
-CHROMA_KEY = 0x00010101
-TRANSPARENT_BK = 1
-PS_SOLID = 0
-NULL_BRUSH = 5
-DT_CENTER = 0x0001
-DT_VCENTER = 0x0004
-DT_SINGLELINE = 0x0020
+_HAND_BONES = (
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
+    (13, 17), (0, 17), (17, 18), (18, 19), (19, 20),
+)
+_FINGERTIPS = (4, 8, 12, 16, 20)
 
 WNDPROC = ctypes.WINFUNCTYPE(
     ctypes.c_longlong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long,
@@ -70,23 +67,8 @@ class _WNDCLASSEXW(ctypes.Structure):
     ]
 
 
-class _PAINTSTRUCT(ctypes.Structure):
-    _fields_ = [
-        ("hdc", wintypes.HDC),
-        ("fErase", wintypes.BOOL),
-        ("rcPaint", wintypes.RECT),
-        ("fRestore", wintypes.BOOL),
-        ("fIncUpdate", wintypes.BOOL),
-        ("rgbReserved", ctypes.c_byte * 32),
-    ]
-
-
-def _rgb(r: int, g: int, b: int) -> int:
-    return r | (g << 8) | (b << 16)
-
-
 class TranslucentOverlay:
-    """Click-through translucent HUD showing reticle, ripples, radial wheel, and laser trail."""
+    """Anti-aliased GDI+ layered overlay showing all 5/10 fingers, circular reticle, & radial menu."""
 
     def __init__(self, cfg: UIConfig) -> None:
         self._cfg = cfg
@@ -102,11 +84,12 @@ class TranslucentOverlay:
         )
         self._ripple_until: float = 0.0
         self._ripple_pos: tuple[int, int] = (0, 0)
-        self._ripple_color: int = _rgb(0, 230, 160)
+        self._ripple_color: int = argb(230, 0, 235, 170)
         self._toast_text: str = ""
         self._toast_until: float = 0.0
-        self._laser_trail: Deque[tuple[int, int]] = deque(maxlen=12)
+        self._laser_trail: Deque[tuple[int, int]] = deque(maxlen=14)
         self._wndproc_ref = None
+        self._canvas: Optional[LayeredCanvas] = None
 
     def start(self) -> None:
         if not self._cfg.overlay_enabled or self._thread is not None:
@@ -135,30 +118,26 @@ class TranslucentOverlay:
 
             if feedback.clicked_event is not None:
                 self._ripple_pos = feedback.cursor_px
-                self._ripple_until = time.perf_counter() + 0.25
+                self._ripple_until = time.perf_counter() + 0.28
                 if feedback.clicked_event == "RIGHT":
-                    self._ripple_color = _rgb(80, 180, 255)
+                    self._ripple_color = argb(235, 70, 185, 255)
                 elif feedback.clicked_event == "MIDDLE":
-                    self._ripple_color = _rgb(200, 120, 255)
+                    self._ripple_color = argb(235, 195, 120, 255)
                 else:
-                    self._ripple_color = _rgb(0, 235, 150)
+                    self._ripple_color = argb(235, 0, 238, 168)
 
                 if feedback.clicked_event not in ("LEFT", "RIGHT", "MIDDLE", "KEY_PINCH"):
                     self._toast_text = feedback.clicked_event
-                    self._toast_until = time.perf_counter() + 1.1
+                    self._toast_until = time.perf_counter() + 1.15
         user32.PostMessageW(self._hwnd, WM_APP_REDRAW, 0, 0)
 
     def _ui_loop(self) -> None:
         h_inst = kernel32.GetModuleHandleW(None)
-        cls_name = f"VizToolOverlay_{id(self)}"
-        bg_brush = gdi32.CreateSolidBrush(CHROMA_KEY)
+        cls_name = f"VizToolGdiPlusOverlay_{id(self)}"
 
         def wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
             if msg == WM_APP_REDRAW:
-                user32.InvalidateRect(hwnd, None, False)
-                return 0
-            if msg == WM_PAINT:
-                self._on_paint(hwnd, bg_brush)
+                self._render(hwnd)
                 return 0
             if msg == WM_DESTROY:
                 user32.PostQuitMessage(0)
@@ -170,9 +149,7 @@ class TranslucentOverlay:
         wc.cbSize = ctypes.sizeof(_WNDCLASSEXW)
         wc.lpfnWndProc = self._wndproc_ref
         wc.hInstance = h_inst
-        wc.hBrush = bg_brush
         wc.lpszClassName = cls_name
-
         user32.RegisterClassExW(ctypes.byref(wc))
 
         sw = user32.GetSystemMetrics(0)
@@ -185,21 +162,12 @@ class TranslucentOverlay:
             | WS_EX_NOACTIVATE
         )
         hwnd = user32.CreateWindowExW(
-            ex_style,
-            cls_name,
-            "VizTool HUD",
-            WS_POPUP | WS_VISIBLE,
-            0,
-            0,
-            sw,
-            sh,
-            None,
-            None,
-            h_inst,
-            None,
+            ex_style, cls_name, "VizTool HUD", WS_POPUP | WS_VISIBLE,
+            0, 0, sw, sh, None, None, h_inst, None,
         )
         self._hwnd = hwnd
-        user32.SetLayeredWindowAttributes(hwnd, CHROMA_KEY, 220, LWA_COLORKEY | LWA_ALPHA)
+        self._canvas = LayeredCanvas(sw, sh)
+        self._render(hwnd)
         user32.ShowWindow(hwnd, 8)
         self._ready.set()
 
@@ -208,62 +176,67 @@ class TranslucentOverlay:
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
 
-        gdi32.DeleteObject(bg_brush)
+        if self._canvas is not None:
+            self._canvas.dispose()
+            self._canvas = None
 
-    def _draw_radial_menu(
-        self, mem_dc: int, origin: tuple[int, int], selected: Optional[AppMode]
-    ) -> None:
-        ox, oy = origin
-        outer_r = 105
-        # Outer dark ring
-        bg_b = gdi32.CreateSolidBrush(_rgb(18, 22, 30))
-        border_p = gdi32.CreatePen(PS_SOLID, 2, _rgb(0, 210, 255))
-        old_b = gdi32.SelectObject(mem_dc, bg_b)
-        old_p = gdi32.SelectObject(mem_dc, border_p)
-        gdi32.Ellipse(mem_dc, ox - outer_r, oy - outer_r, ox + outer_r, oy + outer_r)
-        gdi32.SelectObject(mem_dc, old_b)
-        gdi32.SelectObject(mem_dc, old_p)
-        gdi32.DeleteObject(bg_b)
-        gdi32.DeleteObject(border_p)
+    def _draw_hand_hologram(self, c: LayeredCanvas, sw: int, sh: int, hand_pts_list: tuple) -> None:
+        """Render all 5 or 10 fingers + faint mirror skeleton translucently on screen."""
+        for pts in hand_pts_list:
+            # Faint sci-fi skeleton bones
+            for a, b in _HAND_BONES:
+                x1, y1 = float(pts[a, 0]) * sw, float(pts[a, 1]) * sh
+                x2, y2 = float(pts[b, 0]) * sw, float(pts[b, 1]) * sh
+                c.draw_line(x1, y1, x2, y2, argb(72, 0, 215, 255), 1.6)
 
-        # 4 directional slices
+            # Circular nodes for all 5 fingertips
+            for idx in _FINGERTIPS:
+                fx, fy = float(pts[idx, 0]) * sw, float(pts[idx, 1]) * sh
+                if idx == 8:
+                    c.draw_circle(fx, fy, 11.0, argb(190, 0, 240, 175), 2.0)
+                    c.fill_circle(fx, fy, 3.8, argb(230, 0, 255, 195))
+                elif idx == 4:
+                    c.draw_circle(fx, fy, 9.5, argb(175, 0, 200, 255), 1.8)
+                    c.fill_circle(fx, fy, 3.2, argb(215, 90, 225, 255))
+                else:
+                    c.draw_circle(fx, fy, 7.5, argb(120, 150, 220, 255), 1.4)
+                    c.fill_circle(fx, fy, 2.5, argb(175, 190, 235, 255))
+
+    def _draw_radial_menu(self, c: LayeredCanvas, origin: tuple[int, int], selected: Optional[AppMode]) -> None:
+        ox, oy = float(origin[0]), float(origin[1])
+        # Glassmorphic outer ring + inner core
+        c.fill_circle(ox, oy, 118.0, argb(205, 14, 18, 28))
+        c.draw_circle(ox, oy, 118.0, argb(220, 0, 220, 255), 2.2)
+        c.draw_circle(ox, oy, 36.0, argb(130, 0, 220, 255), 1.4)
+
         slices = [
-            (AppMode.MOUSE, ox, oy - 68),
-            (AppMode.MEDIA, ox + 66, oy),
-            (AppMode.KEYBOARD, ox, oy + 68),
-            (AppMode.LASER, ox - 66, oy),
+            (AppMode.MOUSE, ox, oy - 74.0),
+            (AppMode.MEDIA, ox + 72.0, oy),
+            (AppMode.KEYBOARD, ox, oy + 74.0),
+            (AppMode.LASER, ox - 72.0, oy),
         ]
-        gdi32.SetBkMode(mem_dc, TRANSPARENT_BK)
         for mode, sx, sy in slices:
             is_sel = mode == selected
-            col = _rgb(0, 235, 160) if is_sel else _rgb(190, 205, 225)
             if is_sel:
-                hl_b = gdi32.CreateSolidBrush(_rgb(35, 55, 70))
-                hl_p = gdi32.CreatePen(PS_SOLID, 2, col)
-                ob = gdi32.SelectObject(mem_dc, hl_b)
-                op = gdi32.SelectObject(mem_dc, hl_p)
-                gdi32.RoundRect(mem_dc, sx - 40, sy - 16, sx + 40, sy + 16, 10, 10)
-                gdi32.SelectObject(mem_dc, ob)
-                gdi32.SelectObject(mem_dc, op)
-                gdi32.DeleteObject(hl_b)
-                gdi32.DeleteObject(hl_p)
-            gdi32.SetTextColor(mem_dc, col)
-            rc = wintypes.RECT(sx - 40, sy - 14, sx + 40, sy + 14)
-            user32.DrawTextW(mem_dc, mode.value, len(mode.value), ctypes.byref(rc), DT_CENTER | DT_VCENTER | DT_SINGLELINE)
+                c.fill_round_rect(
+                    sx - 44.0, sy - 17.0, 88.0, 34.0, 12.0,
+                    argb(230, 15, 75, 78), argb(255, 0, 240, 180), 2.0,
+                )
+                txt_col = argb(255, 0, 255, 195)
+            else:
+                c.fill_round_rect(
+                    sx - 44.0, sy - 17.0, 88.0, 34.0, 12.0,
+                    argb(140, 26, 33, 46), argb(90, 120, 150, 180), 1.0,
+                )
+                txt_col = argb(220, 200, 215, 235)
+            c.draw_text(mode.value, sx - 44.0, sy - 17.0, 88.0, 34.0, txt_col, 9.5, bold=is_sel)
 
-    def _on_paint(self, hwnd: int, bg_brush: int) -> None:
-        ps = _PAINTSTRUCT()
-        hdc = user32.BeginPaint(hwnd, ctypes.byref(ps))
-
-        sw = user32.GetSystemMetrics(0)
-        sh = user32.GetSystemMetrics(1)
-
-        mem_dc = gdi32.CreateCompatibleDC(hdc)
-        bmp = gdi32.CreateCompatibleBitmap(hdc, sw, sh)
-        old_bmp = gdi32.SelectObject(mem_dc, bmp)
-
-        full_rect = wintypes.RECT(0, 0, sw, sh)
-        user32.FillRect(mem_dc, ctypes.byref(full_rect), bg_brush)
+    def _render(self, hwnd: int) -> None:
+        c = self._canvas
+        if c is None:
+            return
+        sw, sh = c.width, c.height
+        c.clear()
 
         with self._lock:
             fb = self._feedback
@@ -276,87 +249,54 @@ class TranslucentOverlay:
 
         now = time.perf_counter()
 
-        # 1. Laser Pointer Trail
+        # 1. All 5/10 fingers mirror hologram (hidden in LASER mode where 1 dot suffices)
+        if fb.state != InteractionState.SLEEP_IDLE and fb.mode != AppMode.LASER and fb.hand_landmarks_2d:
+            self._draw_hand_hologram(c, sw, sh, fb.hand_landmarks_2d)
+
+        # 2. Laser Pointer fading trail
         if fb.mode == AppMode.LASER and len(trail) > 1:
+            n = len(trail)
             for i, (tx, ty) in enumerate(trail):
-                r = max(2, int(2 + (i / len(trail)) * 8))
-                lp = gdi32.CreateSolidBrush(_rgb(255, 60, 80))
-                ob = gdi32.SelectObject(mem_dc, lp)
-                gdi32.Ellipse(mem_dc, tx - r, ty - r, tx + r, ty + r)
-                gdi32.SelectObject(mem_dc, ob)
-                gdi32.DeleteObject(lp)
+                frac = (i + 1) / n
+                c.fill_circle(float(tx), float(ty), 2.0 + frac * 7.5, argb(int(40 + frac * 195), 255, 55, 80))
 
-        # 2. Radial Pie Menu
+        # 3. Radial Pie Menu
         if fb.state == InteractionState.RADIAL_MENU and fb.radial_origin_px is not None:
-            self._draw_radial_menu(mem_dc, fb.radial_origin_px, fb.radial_selection)
+            self._draw_radial_menu(c, fb.radial_origin_px, fb.radial_selection)
 
-        # 3. Sci-Fi Concentric Cursor Reticle
+        # 4. Circular Sci-Fi Cursor Reticle
         if self._cfg.show_cursor_ring and fb.state != InteractionState.SLEEP_IDLE:
-            cx, cy = fb.cursor_px
+            cx, cy = float(fb.cursor_px[0]), float(fb.cursor_px[1])
             if fb.state == InteractionState.PINCH_LOCK:
-                ring_color = _rgb(255, 200, 40)
-                radius = 12
+                ring_col, r = argb(245, 255, 200, 50), 14.0
             elif fb.state == InteractionState.DRAGGING:
-                ring_color = _rgb(255, 90, 90)
-                radius = 15
+                ring_col, r = argb(245, 255, 85, 95), 17.0
             elif fb.state in (InteractionState.SCROLLING, InteractionState.ZOOMING, InteractionState.MEDIA_VOLUME):
-                ring_color = _rgb(80, 190, 255)
-                radius = 17
+                ring_col, r = argb(245, 65, 195, 255), 19.0
             elif fb.state == InteractionState.CLUTCH:
-                ring_color = _rgb(140, 150, 165)
-                radius = 10
+                ring_col, r = argb(160, 150, 165, 185), 11.0
             elif fb.mode == AppMode.LASER:
-                ring_color = _rgb(255, 60, 80)
-                radius = 12
+                ring_col, r = argb(250, 255, 55, 80), 13.0
             else:
-                ring_color = _rgb(0, 235, 160)
-                radius = 14
+                ring_col, r = argb(235, 0, 238, 170), 16.0
 
-            pen = gdi32.CreatePen(PS_SOLID, 2, ring_color)
-            old_pen = gdi32.SelectObject(mem_dc, pen)
-            old_brush = gdi32.SelectObject(mem_dc, gdi32.GetStockObject(NULL_BRUSH))
-            gdi32.Ellipse(mem_dc, cx - radius, cy - radius, cx + radius, cy + radius)
-            dot_b = gdi32.CreateSolidBrush(ring_color)
-            gdi32.SelectObject(mem_dc, dot_b)
-            gdi32.Ellipse(mem_dc, cx - 2, cy - 2, cx + 2, cy + 2)
-            gdi32.SelectObject(mem_dc, old_brush)
-            gdi32.SelectObject(mem_dc, old_pen)
-            gdi32.DeleteObject(dot_b)
-            gdi32.DeleteObject(pen)
+            c.draw_circle(cx, cy, r + 5.0, (ring_col & 0x00FFFFFF) | 0x45000000, 1.5)
+            c.draw_circle(cx, cy, r, ring_col, 2.2)
+            c.fill_circle(cx, cy, 3.0, ring_col)
 
-        # 4. Click Ripple Animation
+        # 5. Click Ripple Animation
         if now < ripple_until:
-            rx, ry = ripple_pos
-            progress = 1.0 - (ripple_until - now) / 0.25
-            r = int(12 + progress * 22)
-            pen = gdi32.CreatePen(PS_SOLID, 2, ripple_color)
-            old_pen = gdi32.SelectObject(mem_dc, pen)
-            old_brush = gdi32.SelectObject(mem_dc, gdi32.GetStockObject(NULL_BRUSH))
-            gdi32.Ellipse(mem_dc, rx - r, ry - r, rx + r, ry + r)
-            gdi32.SelectObject(mem_dc, old_brush)
-            gdi32.SelectObject(mem_dc, old_pen)
-            gdi32.DeleteObject(pen)
+            rx, ry = float(ripple_pos[0]), float(ripple_pos[1])
+            prog = 1.0 - (ripple_until - now) / 0.28
+            rr = 14.0 + prog * 28.0
+            alpha = max(10, int(230 * (1.0 - prog)))
+            c.draw_circle(rx, ry, rr, (ripple_color & 0x00FFFFFF) | (alpha << 24), 2.4)
 
-        # 5. Action Toast Banner (e.g., MINIMIZE, CLOSE, VOL+, MODE:MEDIA)
+        # 6. Glassmorphic Action Toast Banner
         if now < toast_until and toast_text:
-            tx1, ty1 = sw // 2 - 95, 22
-            tx2, ty2 = sw // 2 + 95, 56
-            tb = gdi32.CreateSolidBrush(_rgb(22, 26, 34))
-            tp = gdi32.CreatePen(PS_SOLID, 2, _rgb(0, 220, 255))
-            ob = gdi32.SelectObject(mem_dc, tb)
-            op = gdi32.SelectObject(mem_dc, tp)
-            gdi32.RoundRect(mem_dc, tx1, ty1, tx2, ty2, 16, 16)
-            gdi32.SelectObject(mem_dc, ob)
-            gdi32.SelectObject(mem_dc, op)
-            gdi32.DeleteObject(tb)
-            gdi32.DeleteObject(tp)
-            gdi32.SetBkMode(mem_dc, TRANSPARENT_BK)
-            gdi32.SetTextColor(mem_dc, _rgb(240, 248, 255))
-            tr = wintypes.RECT(tx1, ty1, tx2, ty2)
-            user32.DrawTextW(mem_dc, toast_text, len(toast_text), ctypes.byref(tr), DT_CENTER | DT_VCENTER | DT_SINGLELINE)
+            tw, th = 210.0, 38.0
+            tx, ty = (sw - tw) / 2.0, 20.0
+            c.fill_round_rect(tx, ty, tw, th, 18.0, argb(215, 16, 22, 32), argb(230, 0, 220, 255), 1.8)
+            c.draw_text(toast_text, tx, ty, tw, th, argb(255, 240, 248, 255), 11.0, bold=True)
 
-        gdi32.BitBlt(hdc, 0, 0, sw, sh, mem_dc, 0, 0, 0x00CC0020)
-        gdi32.SelectObject(mem_dc, old_bmp)
-        gdi32.DeleteObject(bmp)
-        gdi32.DeleteDC(mem_dc)
-        user32.EndPaint(hwnd, ctypes.byref(ps))
+        c.present(hwnd, 0, 0)

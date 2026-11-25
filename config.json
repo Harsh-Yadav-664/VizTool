@@ -16,8 +16,8 @@
   },
   "kinematics": {
     "tracking_mode": "relative",
-    "relative_sensitivity": 2.4,
-    "accel_gamma": 1.35,
+    "relative_sensitivity": 2.6,
+    "accel_gamma": 1.40,
     "filter_min_cutoff": 1.25,
     "filter_beta": 0.012,
     "filter_d_cutoff": 1.0,

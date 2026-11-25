@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import time
 
 from viztool.backends.win32_input import Win32InputBackend
@@ -41,6 +42,7 @@ class VizToolEngine:
             self._mapper,
             self._backend,
             on_mode_changed=self._on_mode_changed,
+            is_point_on_keyboard=self._keyboard.contains_point,
         )
         self._overlay = TranslucentOverlay(cfg.ui)
         self._mini_widget = (
@@ -150,18 +152,24 @@ class VizToolEngine:
                     primary_feat = extract_hand_features(hands[0])
                     primary_g = self._detector.detect(primary_feat)
                     sec_g = None
+                    landmarks_tuple = (primary_feat.landmarks_2d,)
                     if len(hands) > 1:
                         sec_feat = extract_hand_features(hands[1])
                         sec_g = self._detector.detect(sec_feat)
+                        landmarks_tuple = (primary_feat.landmarks_2d, sec_feat.landmarks_2d)
                     intent = resolve_intent(primary_g, sec_g)
                 else:
                     self._detector.reset()
+                    landmarks_tuple = ()
                     intent = resolve_intent(None)
                     if not is_idle and (now - last_hand_seen) >= self._cfg.camera.idle_timeout_sec:
                         is_idle = True
                         self._camera.set_idle_mode(True)
 
-                feedback = self._state_machine.step(now, intent)
+                feedback = replace(
+                    self._state_machine.step(now, intent),
+                    hand_landmarks_2d=landmarks_tuple,
+                )
                 self._overlay.update(feedback)
                 if self._mini_widget is not None:
                     self._mini_widget.update(feedback)
